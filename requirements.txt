@@ -1,0 +1,7 @@
+torch
+torchvision
+runpod
+numpy
+opencv-python-headless
+Pillow
+requests
