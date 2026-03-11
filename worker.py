@@ -4,11 +4,10 @@ import torch
 import runpod
 import base64
 import numpy as np
-from PIL import Image
 import torch.nn.functional as F
 from torchvision.transforms.functional import normalize
 
-# ISNet Model Architecture (तपाईंलाई यो फाइल म अर्को स्टेपमा दिनेछु)
+# ISNet Model Architecture
 from models.isnet import ISNetDIS
 
 # --- CONFIGURATION ---
@@ -18,17 +17,18 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # --- MODEL LOADING ---
 def load_model():
     model = ISNetDIS()
-    # Weights लोड गर्ने
     if os.path.exists(MODEL_PATH):
+        # मोडल वेट्स लोड गर्ने
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.to(device).eval()
     return model
 
+# ग्लोबल मोडल अब्जेक्ट
 model = load_model()
 
 def process_image(img_bgr):
     """
-    ISNet प्रयोग गरेर Mask निकाल्ने र Alpha Channel मिलाउने
+    ISNet प्रयोग गरेर मास्क निकाल्ने र ट्रान्सपरेन्ट इमेज बनाउने
     """
     h, w = img_bgr.shape[:2]
     
@@ -37,22 +37,24 @@ def process_image(img_bgr):
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, input_size, interpolation=cv2.INTER_LINEAR)
     
-    # Tensor मा बदल्ने र Normalize गर्ने
+    # Tensor मा बदल्ने
     img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float().unsqueeze(0).to(device)
     img_tensor = img_tensor / 255.0
+    # ISNet को लागि standard normalization
     img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
-    # २. Inference (Inference Stage Network)
+    # २. Inference
     with torch.no_grad():
-        result = model(img_tensor)[0][0] # पहिलो आउटपुट लिने
+        # ISNet ले धेरै वटा म्याप दिन्छ, हामीलाई पहिलो मुख्य म्याप चाहिन्छ
+        result = model(img_tensor)[0][0] 
     
     # ३. Post-processing
-    # रिजल्टलाई ओरिजिनल साइजमा फर्काउने
-    result = (result - result.min()) / (result.max() - result.min()) # 0 to 1 scaling
+    # म्याक्स र मिनलाई ०-१ रेन्जमा स्केलिङ गर्ने
+    result = (result - result.min()) / (result.max() - result.min())
     mask = result.cpu().numpy()
-    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
     
-    # Mask लाई ०-२५५ को रेन्जमा ल्याउने
+    # ओरिजिनल साइजमा फर्काउने
+    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
     mask = (mask * 255).astype(np.uint8)
     
     # ४. Result Merge (PNG with Alpha Channel)
@@ -63,7 +65,7 @@ def process_image(img_bgr):
 
 def handler(job):
     """
-    RunPod Serverless Handler
+    RunPod Serverless Handler (यसले Nest Nepal सँग कुरा गर्छ)
     """
     try:
         job_input = job['input']
@@ -72,7 +74,7 @@ def handler(job):
         if not img_b64:
             return {"error": "No image data provided"}
 
-        # Base64 Decode
+        # Base64 बाट फोटो बनाउने
         img_data = base64.b64decode(img_b64)
         nparr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -80,17 +82,18 @@ def handler(job):
         if img is None:
             return {"error": "Invalid image format"}
 
-        # Processing
+        # वास्तविक ब्याकग्राउन्ड हटाउने काम यहाँ हुन्छ
         processed_img = process_image(img)
 
-        # Encode to PNG base64
+        # रिजल्टलाई फेरि Base64 मा बदल्ने
         _, buffer = cv2.imencode('.png', processed_img)
         result_b64 = base64.b64encode(buffer).decode('utf-8')
 
         return result_b64
 
     except Exception as e:
+        # एरर आएमा जानकारी पठाउने
         return {"error": str(e)}
 
-# RunPod सुरु गर्ने
+# RunPod सर्भरलेस इन्जिन सुरु गर्ने
 runpod.serverless.start({"handler": handler})
