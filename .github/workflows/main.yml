@@ -3,7 +3,7 @@ name: Build and Push Docker Image
 on:
   push:
     branches:
-      - main  # जब तपाईँ main branch मा push गर्नुहुन्छ यो चल्छ
+      - main
 
 jobs:
   build:
@@ -24,5 +24,4 @@ jobs:
         with:
           context: .
           push: true
-          # यहाँ तपाईँको इमेजको नाम हुनेछ (सबै lowercase मा हुनुपर्छ)
           tags: ghcr.io/${{ github.repository_owner }}/nullbg-worker:latest
