@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 wget
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- मोडल डाउनलोड गर्ने (यसले गर्दा तपाईँले अपलोड गर्नु पर्दैन) ---
-RUN wget -O isnet.pth https://github.com/xuebinqin/DIS/raw/main/IS-Net/isnet-general-use.pth
+# --- नयाँ लिङ्क प्रयोग गरेर मोडल डाउनलोड गर्ने ---
+RUN wget --no-check-certificate -O isnet.pth https://huggingface.co/SkalskiP/isnet-general-use/resolve/main/isnet-general-use.pth
 
 # बाँकी फाइलहरू कपी गर्ने
 COPY . .
