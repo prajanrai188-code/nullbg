@@ -7,6 +7,9 @@ import numpy as np
 import torch.nn.functional as F
 from torchvision.transforms.functional import normalize
 
+# सर्भरमा OpenCV क्र्यास हुन नदिन (Threading बन्द गर्ने)
+cv2.setNumThreads(0)
+
 # ISNet Model Architecture
 from models.isnet import ISNetDIS
 
@@ -18,7 +21,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def load_model():
     model = ISNetDIS()
     if os.path.exists(MODEL_PATH):
-        # मोडल वेट्स लोड गर्ने
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
     model.to(device).eval()
     return model
@@ -40,17 +42,16 @@ def process_image(img_bgr):
     # Tensor मा बदल्ने
     img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float().unsqueeze(0).to(device)
     img_tensor = img_tensor / 255.0
-    # ISNet को लागि standard normalization
     img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
     # २. Inference
     with torch.no_grad():
-        # ISNet ले धेरै वटा म्याप दिन्छ, हामीलाई पहिलो मुख्य म्याप चाहिन्छ
-        result = model(img_tensor)[0][0] 
+        # [CRASH FIX]: torch.squeeze प्रयोग गरेर (1, 1024, 1024) लाई (1024, 1024) को 2D बनाइएको
+        result = torch.squeeze(model(img_tensor)[0][0])
     
     # ३. Post-processing
-    # म्याक्स र मिनलाई ०-१ रेन्जमा स्केलिङ गर्ने
-    result = (result - result.min()) / (result.max() - result.min())
+    # म्याक्स र मिनलाई ०-१ रेन्जमा स्केलिङ गर्ने (1e-8 ले डिभाइडाइ जिरो एरर रोक्छ)
+    result = (result - result.min()) / (result.max() - result.min() + 1e-8)
     mask = result.cpu().numpy()
     
     # ओरिजिनल साइजमा फर्काउने
@@ -65,7 +66,7 @@ def process_image(img_bgr):
 
 def handler(job):
     """
-    RunPod Serverless Handler (यसले Nest Nepal सँग कुरा गर्छ)
+    RunPod Serverless Handler
     """
     try:
         job_input = job['input']
@@ -73,6 +74,10 @@ def handler(job):
         
         if not img_b64:
             return {"error": "No image data provided"}
+
+        # [CRASH FIX]: यदि फ्रन्टएन्डले Header (data:image...) पठाएको छ भने त्यसलाई हटाउने
+        if "," in img_b64:
+            img_b64 = img_b64.split(",")[1]
 
         # Base64 बाट फोटो बनाउने
         img_data = base64.b64decode(img_b64)
@@ -92,7 +97,6 @@ def handler(job):
         return result_b64
 
     except Exception as e:
-        # एरर आएमा जानकारी पठाउने
         return {"error": str(e)}
 
 # RunPod सर्भरलेस इन्जिन सुरु गर्ने
