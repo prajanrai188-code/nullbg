@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # १. पहिले बाँकी सबै फाइलहरू GitHub बाट कपी गर्ने
 COPY . .
 
-# २. पुरानो बिग्रिएको फाइल फाल्ने र GitHub Releases बाट १००% सही मोडल तान्ने
-RUN rm -f isnet.pth && wget -O isnet.pth "https://github.com/plemeri/transparent-background/releases/download/1.2.12/isnet.pth"
+# 2. अन्तिममा १००% सही URL बाट मोडल डाउनलोड गर्ने
+RUN rm -f isnet.pth && wget -qO isnet.pth "https://huggingface.co/doevent/dis/resolve/main/isnet.pth"
 
 CMD ["python", "-u", "worker.py"]
