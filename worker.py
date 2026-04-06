@@ -3,6 +3,7 @@ import cv2
 import torch
 import runpod
 import base64
+import urllib.request
 import numpy as np
 from torchvision.transforms.functional import normalize
 
@@ -13,9 +14,20 @@ from models.isnet import ISNetDIS
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+MODEL_PATH = 'isnet.pth'
+# ओरिजिनल मोडल डाउनलोड गर्ने URL
+MODEL_URL = 'https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth'
+
+print("--> 🟢 Checking model file...")
+# [CRASH FIX]: यदि GitHub ले फाइल बिगारेको छ भने आफैँ नयाँ डाउनलोड गर्ने
+if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 10000000:
+    print("--> 🟡 GitHub file is corrupted. Downloading original isnet.pth. Please wait...")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    print("--> 🟢 Download complete!")
+
 print("--> 🟢 Loading model...")
 model = ISNetDIS()
-model.load_state_dict(torch.load('isnet.pth', map_location=device))
+model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
 model.to(device).eval()
 print("--> 🟢 Model loaded successfully!")
 
@@ -26,7 +38,6 @@ def process_image(img_bgr):
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, input_size, interpolation=cv2.INTER_LINEAR)
     
-    # [CRASH FIX]: .contiguous() थपेर PyTorch को C++ क्र्यास पूर्ण रूपमा रोकिएको
     img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).contiguous().float().unsqueeze(0).to(device)
     img_tensor = img_tensor / 255.0
     img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
@@ -72,7 +83,6 @@ def handler(job):
             print("--> 🔴 Error: OpenCV could not read image")
             return {"error": "Invalid image format"}
 
-        # मुख्य काम
         processed_img = process_image(img)
 
         print("--> 🔵 Encoding result to Base64...")
@@ -88,5 +98,4 @@ def handler(job):
         print(f"--> 🔴 [EXCEPTION CAUGHT]: {error_msg}")
         return {"error": str(e), "trace": error_msg}
 
-# स्टार्ट
 runpod.serverless.start({"handler": handler})
