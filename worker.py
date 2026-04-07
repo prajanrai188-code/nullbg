@@ -35,7 +35,6 @@ try:
     model = ISNetDIS()
     state_dict = torch.load(MODEL_PATH, map_location=device)
     
-    # [CRASH FIX]: PyTorch को "Unexpected keys" एररलाई जबर्जस्ती बाइपास गर्न
     try:
         model.load_state_dict(state_dict)
     except RuntimeError as e:
@@ -104,12 +103,20 @@ def handler(job):
 
         processed_img = process_image(img)
 
+        # [API LIMIT FIX]: RunPod को 20MB Limit छल्न धेरै ठुलो फोटोलाई अलिकति रिसाइज गर्ने
+        ph, pw = processed_img.shape[:2]
+        if max(ph, pw) > 1500:
+            scale = 1500 / max(ph, pw)
+            processed_img = cv2.resize(processed_img, (int(pw * scale), int(ph * scale)), interpolation=cv2.INTER_AREA)
+
         log("--> 🔵 Encoding result to Base64...")
         _, buffer = cv2.imencode('.png', processed_img)
         result_b64 = base64.b64encode(buffer).decode('utf-8')
 
         log("--> 🟢 Successfully finished request!")
-        return result_b64
+        
+        # [FORMAT FIX]: RunPod ले खोजेको सही 'Dictionary' फर्म्याटमा पठाउने
+        return {"image": result_b64}
 
     except Exception as e:
         error_msg = traceback.format_exc()
@@ -118,6 +125,3 @@ def handler(job):
 
 log("--> 🟢 Starting RunPod Serverless...")
 runpod.serverless.start({"handler": handler})
-
-
-# FORCE UPDATE TO FIX CRASH
