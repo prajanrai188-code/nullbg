@@ -118,3 +118,6 @@ def handler(job):
 
 log("--> 🟢 Starting RunPod Serverless...")
 runpod.serverless.start({"handler": handler})
+
+
+# FORCE UPDATE TO FIX CRASH
