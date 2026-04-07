@@ -26,31 +26,41 @@ try:
 
     log("--> 🟢 Checking model file size...")
     if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 10000000:
-        log("--> 🟡 File is corrupted. Downloading 170MB from HuggingFace. This may take 1-2 minutes...")
+        log("--> 🟡 Downloading 170MB weights...")
         urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-        log("--> 🟢 Download completed successfully!")
+        log("--> 🟢 Download completed!")
 
     log("--> 🟢 Loading model into GPU...")
     model = ISNetDIS()
-    state_dict = torch.load(MODEL_PATH, map_location=device)
+    loaded_data = torch.load(MODEL_PATH, map_location=device)
     
-    # [CRASH FIX]: The Ultimate Key-Mapper! (दिमाग जोड्ने ट्रान्सलेटर)
-    log("--> 🟡 Translating brain weights to match GitHub code...")
+    # [CRASH FIX 2.0]: THE BRAIN UNBOXER (बाकस खोल्ने जादु)
+    if "state_dict" in loaded_data:
+        state_dict = loaded_data["state_dict"]
+    elif "model" in loaded_data:
+        state_dict = loaded_data["model"]
+    else:
+        state_dict = loaded_data
+        
+    log("--> 🟡 Matching brain layers perfectly...")
     new_state_dict = {}
-    model_keys = model.state_dict().keys()
+    model_keys = list(model.state_dict().keys())
     
     for k, v in state_dict.items():
-        if k in model_keys:
-            new_state_dict[k] = v
-        # यदि 'net.' छुटेको छ भने आफैँ थपिदिने
-        elif "net." + k in model_keys:
-            new_state_dict["net." + k] = v
+        # नामको अगाडि भएको 'net.' वा 'module.' हटाएर सफा गर्ने
+        clean_k = k.replace("net.", "").replace("module.", "")
+        
+        # अब हाम्रो मोडलसँग ठ्याक्कै दाँज्ने
+        if clean_k in model_keys:
+            new_state_dict[clean_k] = v
+        elif "net." + clean_k in model_keys:
+            new_state_dict["net." + clean_k] = v
         else:
             new_state_dict[k] = v
 
     model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
-    log("--> 🟢 Model fully loaded and READY!")
+    log("--> 🟢 Model fully loaded with memory!")
 
 except Exception as e:
     log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
@@ -71,10 +81,15 @@ def process_image(img_bgr):
     log("--> 🟡 2. Running AI inference...")
     with torch.no_grad():
         preds = model(img_tensor)
-        result = torch.squeeze(preds[0][0])
+        
+        # ISNet ले list दिन्छ, त्यसलाई सही तरिकाले तान्ने
+        result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
+        result = torch.squeeze(result)
     
     log("--> 🟡 3. Post-processing mask...")
-    result = (result - result.min()) / (result.max() - result.min() + 1e-8)
+    ma = torch.max(result)
+    mi = torch.min(result)
+    result = (result - mi) / (ma - mi + 1e-8)
     mask = result.cpu().numpy()
     
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -94,7 +109,6 @@ def handler(job):
         img_b64 = job_input.get("image", "")
         
         if not img_b64:
-            log("--> 🔴 Error: No image data in request")
             return {"error": "No image data provided"}
 
         if "," in img_b64:
@@ -106,12 +120,10 @@ def handler(job):
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
         if img is None:
-            log("--> 🔴 Error: OpenCV could not read image")
             return {"error": "Invalid image format"}
 
         processed_img = process_image(img)
 
-        # [API LIMIT FIX]: 20MB Limit छल्न
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
