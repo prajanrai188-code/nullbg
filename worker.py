@@ -1,7 +1,6 @@
 import sys
 import traceback
 
-# यो फङ्सनले रनपोडको लगमा म्यासेजलाई लुक्न दिँदैन (Force Flush)
 def log(msg):
     print(msg, flush=True)
 
@@ -35,12 +34,21 @@ try:
     model = ISNetDIS()
     state_dict = torch.load(MODEL_PATH, map_location=device)
     
-    try:
-        model.load_state_dict(state_dict)
-    except RuntimeError as e:
-        log("--> 🟡 Key mismatch detected! Applying strict=False override to prevent crash...")
-        model.load_state_dict(state_dict, strict=False)
+    # [CRASH FIX]: The Ultimate Key-Mapper! (दिमाग जोड्ने ट्रान्सलेटर)
+    log("--> 🟡 Translating brain weights to match GitHub code...")
+    new_state_dict = {}
+    model_keys = model.state_dict().keys()
+    
+    for k, v in state_dict.items():
+        if k in model_keys:
+            new_state_dict[k] = v
+        # यदि 'net.' छुटेको छ भने आफैँ थपिदिने
+        elif "net." + k in model_keys:
+            new_state_dict["net." + k] = v
+        else:
+            new_state_dict[k] = v
 
+    model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
     log("--> 🟢 Model fully loaded and READY!")
 
@@ -103,7 +111,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # [API LIMIT FIX]: RunPod को 20MB Limit छल्न धेरै ठुलो फोटोलाई अलिकति रिसाइज गर्ने
+        # [API LIMIT FIX]: 20MB Limit छल्न
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
@@ -114,8 +122,6 @@ def handler(job):
         result_b64 = base64.b64encode(buffer).decode('utf-8')
 
         log("--> 🟢 Successfully finished request!")
-        
-        # [FORMAT FIX]: RunPod ले खोजेको सही 'Dictionary' फर्म्याटमा पठाउने
         return {"image": result_b64}
 
     except Exception as e:
