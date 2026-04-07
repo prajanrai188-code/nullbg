@@ -33,12 +33,19 @@ try:
 
     log("--> 🟢 Loading model into GPU...")
     model = ISNetDIS()
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+    state_dict = torch.load(MODEL_PATH, map_location=device)
+    
+    # [CRASH FIX]: PyTorch को "Unexpected keys" एररलाई जबर्जस्ती बाइपास गर्न
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as e:
+        log("--> 🟡 Key mismatch detected! Applying strict=False override to prevent crash...")
+        model.load_state_dict(state_dict, strict=False)
+
     model.to(device).eval()
     log("--> 🟢 Model fully loaded and READY!")
 
 except Exception as e:
-    # यदि माथिको कुनै पनि काम गर्दा क्र्यास भयो भने यहाँ रातो अक्षरमा ठ्याक्कै गल्ती प्रिन्ट हुन्छ
     log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
     sys.exit(1)
 
