@@ -36,43 +36,15 @@ try:
     else:
         state_dict = loaded_data
         
-    # [THE UNIVERSAL MATCHER] - यसले खाली (Blank) आउने समस्या जरैदेखि उखेल्छ!
-    log("--> 🟡 Matching brain layers (Universal Matcher)...")
-    model_state_dict = model.state_dict()
-    model_keys = set(model_state_dict.keys())
-    new_state_dict = {}
-    
-    matched_count = 0
+    # सफा तरिकाले मोडल लोड गर्ने
+    clean_state_dict = {}
     for k, v in state_dict.items():
-        clean_k = k.replace("module.", "").replace("net.", "")
+        new_key = k.replace("net.", "").replace("module.", "")
+        clean_state_dict[new_key] = v
         
-        # चेक गर्ने ४ वटा तरिकाहरू (कुनै न कुनै एउटा पक्का मिल्छ)
-        possible_keys = [
-            k,
-            clean_k,
-            "net." + clean_k,
-            "module." + clean_k
-        ]
-        
-        matched = False
-        for pk in possible_keys:
-            if pk in model_keys:
-                new_state_dict[pk] = v
-                matched_count += 1
-                matched = True
-                break
-                
-        if not matched:
-            new_state_dict[k] = v # नमिले पनि जस्तो छ त्यस्तै राखिदिने
-
-    log(f"--> 🟢 Matched {matched_count} out of {len(model_keys)} layers!")
-
-    if matched_count == 0:
-        log("--> 🔴 WARNING: Zero layers matched! Image will likely be blank.")
-
-    model.load_state_dict(new_state_dict, strict=False)
+    model.load_state_dict(clean_state_dict, strict=False)
     model.to(device).eval()
-    log("--> 🟢 Model fully loaded with perfect memory!")
+    log("--> 🟢 Model fully loaded with PERFECT memory!")
 
 except Exception as e:
     log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
@@ -97,17 +69,23 @@ def process_image(img_bgr):
         result = torch.squeeze(result)
     
     log("--> 🟡 3. Post-processing mask...")
-    ma = torch.max(result)
-    mi = torch.min(result)
     
-    if ma == mi:
-        log("--> 🔴 ERROR: Mask is completely blank (ma == mi)!")
+    # NaN भ्यालु (Garbage) आएको छ कि भनेर चेक गर्ने
+    if torch.isnan(result).any():
+        log("--> 🔴 ERROR: AI output contains NaN! Model weights are mismatched.")
         mask = np.zeros((h, w), dtype=np.uint8)
     else:
-        result = (result - mi) / (ma - mi + 1e-8)
-        mask = result.cpu().numpy()
-        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-        mask = (mask * 255).astype(np.uint8)
+        ma = torch.max(result)
+        mi = torch.min(result)
+        
+        if ma == mi:
+            log("--> 🔴 ERROR: Mask is completely blank (ma == mi)!")
+            mask = np.zeros((h, w), dtype=np.uint8)
+        else:
+            result = (result - mi) / (ma - mi + 1e-8)
+            mask = result.cpu().numpy()
+            mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+            mask = (mask * 255).astype(np.uint8)
     
     log("--> 🟡 4. Merging result...")
     b, g, r = cv2.split(img_bgr)
