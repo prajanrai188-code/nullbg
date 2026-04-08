@@ -36,16 +36,43 @@ try:
     else:
         state_dict = loaded_data
         
-    # सफा तरिकाले मोडल लोड गर्ने (कुनै जबरजस्ती म्यापिङ बिना)
-    clean_state_dict = {}
+    # [THE UNIVERSAL MATCHER] - यसले खाली (Blank) आउने समस्या जरैदेखि उखेल्छ!
+    log("--> 🟡 Matching brain layers (Universal Matcher)...")
+    model_state_dict = model.state_dict()
+    model_keys = set(model_state_dict.keys())
+    new_state_dict = {}
+    
+    matched_count = 0
     for k, v in state_dict.items():
-        new_key = k.replace("net.", "").replace("module.", "")
-        clean_state_dict[new_key] = v
+        clean_k = k.replace("module.", "").replace("net.", "")
         
-    # Dockerfile ले सही मोडल तानेपछि यो १००% पर्फेक्ट लोड हुन्छ
-    model.load_state_dict(clean_state_dict, strict=False)
+        # चेक गर्ने ४ वटा तरिकाहरू (कुनै न कुनै एउटा पक्का मिल्छ)
+        possible_keys = [
+            k,
+            clean_k,
+            "net." + clean_k,
+            "module." + clean_k
+        ]
+        
+        matched = False
+        for pk in possible_keys:
+            if pk in model_keys:
+                new_state_dict[pk] = v
+                matched_count += 1
+                matched = True
+                break
+                
+        if not matched:
+            new_state_dict[k] = v # नमिले पनि जस्तो छ त्यस्तै राखिदिने
+
+    log(f"--> 🟢 Matched {matched_count} out of {len(model_keys)} layers!")
+
+    if matched_count == 0:
+        log("--> 🔴 WARNING: Zero layers matched! Image will likely be blank.")
+
+    model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
-    log("--> 🟢 Model fully loaded with PERFECT memory!")
+    log("--> 🟢 Model fully loaded with perfect memory!")
 
 except Exception as e:
     log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
@@ -74,7 +101,7 @@ def process_image(img_bgr):
     mi = torch.min(result)
     
     if ma == mi:
-        log("--> 🔴 ERROR: Mask is completely blank!")
+        log("--> 🔴 ERROR: Mask is completely blank (ma == mi)!")
         mask = np.zeros((h, w), dtype=np.uint8)
     else:
         result = (result - mi) / (ma - mi + 1e-8)
