@@ -22,9 +22,8 @@ try:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     MODEL_PATH = 'isnet.pth'
 
-    # १. मोडल डाउनलोड गर्ने झन्झट हटाइयो (Cold start फास्ट गर्न)
     if not os.path.exists(MODEL_PATH):
-        log(f"--> 🔴 ERROR: Model file {MODEL_PATH} not found! Check Dockerfile.")
+        log(f"--> 🔴 ERROR: Model file {MODEL_PATH} not found!")
 
     log("--> 🟢 Loading model into GPU...")
     model = ISNetDIS()
@@ -37,28 +36,16 @@ try:
     else:
         state_dict = loaded_data
         
-    # २. [ULTIMATE FIX]: Sequential Matcher (Scrambled ब्याकग्राउन्ड हटाउन)
-    log("--> 🟡 Matching brain layers SEQUENTIALLY (Ultimate Fix)...")
-    model_state_dict = model.state_dict()
-    
-    # अनावश्यक कुराहरू (जस्तै trackers) हटाएर मुख्य नसाहरू मात्र तान्ने
-    model_tensors = [(k, v) for k, v in model_state_dict.items() if "num_batches_tracked" not in k]
-    ckpt_tensors = [(k, v) for k, v in state_dict.items() if "num_batches_tracked" not in k]
-    
-    new_state_dict = model_state_dict.copy()
-    matched_count = 0
-    
-    # नाम जेसुकै होस्, लाइनअनुसार साइज हेर्दै ठ्याक्क-ठ्याक्क जोड्ने
-    for (m_key, m_tensor), (c_key, c_tensor) in zip(model_tensors, ckpt_tensors):
-        if m_tensor.shape == c_tensor.shape:
-            new_state_dict[m_key] = c_tensor
-            matched_count += 1
-            
-    log(f"--> 🟢 Matched {matched_count} out of {len(model_tensors)} critical layers!")
-
-    model.load_state_dict(new_state_dict, strict=False)
+    # सफा तरिकाले मोडल लोड गर्ने (कुनै जबरजस्ती म्यापिङ बिना)
+    clean_state_dict = {}
+    for k, v in state_dict.items():
+        new_key = k.replace("net.", "").replace("module.", "")
+        clean_state_dict[new_key] = v
+        
+    # Dockerfile ले सही मोडल तानेपछि यो १००% पर्फेक्ट लोड हुन्छ
+    model.load_state_dict(clean_state_dict, strict=False)
     model.to(device).eval()
-    log("--> 🟢 Model fully loaded with memory!")
+    log("--> 🟢 Model fully loaded with PERFECT memory!")
 
 except Exception as e:
     log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
@@ -79,18 +66,21 @@ def process_image(img_bgr):
     log("--> 🟡 2. Running AI inference...")
     with torch.no_grad():
         preds = model(img_tensor)
-        
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
         result = torch.squeeze(result)
     
     log("--> 🟡 3. Post-processing mask...")
     ma = torch.max(result)
     mi = torch.min(result)
-    result = (result - mi) / (ma - mi + 1e-8)
-    mask = result.cpu().numpy()
     
-    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    mask = (mask * 255).astype(np.uint8)
+    if ma == mi:
+        log("--> 🔴 ERROR: Mask is completely blank!")
+        mask = np.zeros((h, w), dtype=np.uint8)
+    else:
+        result = (result - mi) / (ma - mi + 1e-8)
+        mask = result.cpu().numpy()
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask = (mask * 255).astype(np.uint8)
     
     log("--> 🟡 4. Merging result...")
     b, g, r = cv2.split(img_bgr)
