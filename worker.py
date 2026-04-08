@@ -22,6 +22,7 @@ try:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     MODEL_PATH = 'isnet.pth'
 
+    # १. मोडल डाउनलोड गर्ने झन्झट हटाइयो (Cold start फास्ट गर्न)
     if not os.path.exists(MODEL_PATH):
         log(f"--> 🔴 ERROR: Model file {MODEL_PATH} not found! Check Dockerfile.")
 
@@ -36,26 +37,25 @@ try:
     else:
         state_dict = loaded_data
         
-    log("--> 🟡 Matching brain layers securely (Safe Mode)...")
+    # २. [ULTIMATE FIX]: Sequential Matcher (Scrambled ब्याकग्राउन्ड हटाउन)
+    log("--> 🟡 Matching brain layers SEQUENTIALLY (Ultimate Fix)...")
     model_state_dict = model.state_dict()
-    new_state_dict = {}
     
+    # अनावश्यक कुराहरू (जस्तै trackers) हटाएर मुख्य नसाहरू मात्र तान्ने
+    model_tensors = [(k, v) for k, v in model_state_dict.items() if "num_batches_tracked" not in k]
+    ckpt_tensors = [(k, v) for k, v in state_dict.items() if "num_batches_tracked" not in k]
+    
+    new_state_dict = model_state_dict.copy()
     matched_count = 0
-    for k, v in state_dict.items():
-        # नामको अगाडि भएको 'net.' वा 'module.' हटाएर सफा गर्ने
-        clean_k = k.replace("net.", "").replace("module.", "")
-        
-        # नाम ठ्याक्कै मिल्यो भने मात्र जोड्ने, अन्दाजको भरमा नजोड्ने
-        if clean_k in model_state_dict:
-            new_state_dict[clean_k] = v
-            matched_count += 1
-        elif "net." + clean_k in model_state_dict:
-            new_state_dict["net." + clean_k] = v
+    
+    # नाम जेसुकै होस्, लाइनअनुसार साइज हेर्दै ठ्याक्क-ठ्याक्क जोड्ने
+    for (m_key, m_tensor), (c_key, c_tensor) in zip(model_tensors, ckpt_tensors):
+        if m_tensor.shape == c_tensor.shape:
+            new_state_dict[m_key] = c_tensor
             matched_count += 1
             
-    log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
+    log(f"--> 🟢 Matched {matched_count} out of {len(model_tensors)} critical layers!")
 
-    # मोडल लोड गर्ने
     model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
     log("--> 🟢 Model fully loaded with memory!")
