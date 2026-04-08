@@ -22,8 +22,6 @@ try:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     MODEL_PATH = 'isnet.pth'
 
-    # नोट: यहाँ पहिले मोडल डाउनलोड गर्ने कोड थियो, जुन अब हटाइएको छ।
-    # मोडल अब Dockerfile ले सिधै तान्छ, जसले गर्दा २१ सेकेन्ड बचत हुन्छ!
     if not os.path.exists(MODEL_PATH):
         log(f"--> 🔴 ERROR: Model file {MODEL_PATH} not found! Check Dockerfile.")
 
@@ -31,7 +29,6 @@ try:
     model = ISNetDIS()
     loaded_data = torch.load(MODEL_PATH, map_location=device)
     
-    # [SMART MAPPER]: दिमागका नसाहरू सही ठाउँमा जोड्ने जादु (Opacity Issue Fix)
     if "state_dict" in loaded_data:
         state_dict = loaded_data["state_dict"]
     elif "model" in loaded_data:
@@ -39,34 +36,26 @@ try:
     else:
         state_dict = loaded_data
         
-    log("--> 🟡 Matching brain layers smartly...")
+    log("--> 🟡 Matching brain layers securely (Safe Mode)...")
     model_state_dict = model.state_dict()
     new_state_dict = {}
     
     matched_count = 0
-    for k, v in model_state_dict.items():
-        # पहिलो प्रयास: ठ्याक्कै नाम मिल्छ कि?
-        if k in state_dict:
-            new_state_dict[k] = state_dict[k]
+    for k, v in state_dict.items():
+        # नामको अगाडि भएको 'net.' वा 'module.' हटाएर सफा गर्ने
+        clean_k = k.replace("net.", "").replace("module.", "")
+        
+        # नाम ठ्याक्कै मिल्यो भने मात्र जोड्ने, अन्दाजको भरमा नजोड्ने
+        if clean_k in model_state_dict:
+            new_state_dict[clean_k] = v
             matched_count += 1
-        # दोस्रो प्रयास: 'net.' थप्दा मिल्छ कि?
-        elif "net." + k in state_dict:
-            new_state_dict[k] = state_dict["net." + k]
+        elif "net." + clean_k in model_state_dict:
+            new_state_dict["net." + clean_k] = v
             matched_count += 1
-        # तेस्रो प्रयास: साइज र पछाडिको नाम हेरेर मिलाउने
-        else:
-            layer_name = k.split('.')[-1]
-            for sk, sv in state_dict.items():
-                if sk.endswith(layer_name) and sv.shape == v.shape:
-                    new_state_dict[k] = sv
-                    matched_count += 1
-                    break
-                    
+            
     log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
-    
-    if matched_count < len(model_state_dict) * 0.8:
-        log("--> 🔴 WARNING: Most weights did NOT match! Background removal will fail.")
 
+    # मोडल लोड गर्ने
     model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
     log("--> 🟢 Model fully loaded with memory!")
@@ -91,7 +80,6 @@ def process_image(img_bgr):
     with torch.no_grad():
         preds = model(img_tensor)
         
-        # ISNet ले list दिन्छ, त्यसलाई सही तरिकाले तान्ने
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
         result = torch.squeeze(result)
     
@@ -116,11 +104,9 @@ def handler(job):
     try:
         job_input = job['input']
         
-        # ---> मेसिन ब्युँझाउने (Wake Up) डमी रिक्वेस्ट <---
         if job_input.get("dummy_ping") == "wake_up_machine":
             log("--> 🟢 [WAKE UP PING] Machine is warm and ready!")
             return {"status": "awake", "message": "Machine is ready!"}
-        # ---------------------------------------------------
 
         img_b64 = job_input.get("image", "")
         
