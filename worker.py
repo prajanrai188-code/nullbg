@@ -106,6 +106,13 @@ def handler(job):
     log("--> 🔵 [NEW REQUEST RECEIVED]")
     try:
         job_input = job['input']
+        
+        # ---> नयाँ थपिएको भाग: मेसिन ब्युँझाउने (Wake Up) डमी रिक्वेस्ट <---
+        if job_input.get("dummy_ping") == "wake_up_machine":
+            log("--> 🟢 [WAKE UP PING] Machine is warm and ready!")
+            return {"status": "awake", "message": "Machine is ready!"}
+        # ------------------------------------------------------------------
+
         img_b64 = job_input.get("image", "")
         
         if not img_b64:
