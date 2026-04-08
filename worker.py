@@ -24,11 +24,7 @@ try:
     MODEL_PATH = 'isnet.pth'
     MODEL_URL = 'https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth'
 
-    log("--> 🟢 Checking model file size...")
-    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 10000000:
-        log("--> 🟡 Downloading 170MB weights...")
-        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-        log("--> 🟢 Download completed!")
+
 
     log("--> 🟢 Loading model into GPU...")
     model = ISNetDIS()
