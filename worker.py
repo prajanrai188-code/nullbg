@@ -36,29 +36,34 @@ try:
     else:
         state_dict = loaded_data
         
-    log("--> 🟡 Matching brain layers (Universal Matcher)...")
+    log("--> 🟡 Matching brain layers (The Ultimate Matcher)...")
     model_state_dict = model.state_dict()
     new_state_dict = {}
-    
     matched_count = 0
-    for k, v in state_dict.items():
-        clean_k = k.replace("module.", "").replace("net.", "")
-        
-        # ३ फरक तरिकाले नाम म्याच गर्न खोज्ने
-        if clean_k in model_state_dict:
-            new_state_dict[clean_k] = v
+    
+    for m_key, m_tensor in model_state_dict.items():
+        found = False
+        # १. ठ्याक्कै मिल्यो भने
+        if m_key in state_dict and state_dict[m_key].shape == m_tensor.shape:
+            new_state_dict[m_key] = state_dict[m_key]
             matched_count += 1
-        elif "net." + clean_k in model_state_dict:
-            new_state_dict["net." + clean_k] = v
-            matched_count += 1
-        elif "module." + clean_k in model_state_dict:
-            new_state_dict["module." + clean_k] = v
-            matched_count += 1
+            found = True
+            continue
+            
+        # २. अगाडिको नाम (net. वा module.) हटाएर जबरजस्ती मिलाउने
+        clean_m = m_key.replace("module.", "").replace("net.", "")
+        for c_key, c_tensor in state_dict.items():
+            clean_c = c_key.replace("module.", "").replace("net.", "")
+            if clean_m == clean_c and c_tensor.shape == m_tensor.shape:
+                new_state_dict[m_key] = c_tensor
+                matched_count += 1
+                found = True
+                break
+                
+        if not found:
+            new_state_dict[m_key] = m_tensor 
 
     log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
-
-    if matched_count < len(model_state_dict) * 0.8:
-        log("--> 🔴 FATAL WARNING: Model layers DID NOT match! Image will be faded.")
 
     model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
@@ -86,7 +91,11 @@ def process_image(img_bgr):
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
         result = torch.squeeze(result)
     
-    log("--> 🟡 3. Post-processing mask...")
+    log("--> 🟡 3. Post-processing mask (Added Sigmoid Filter)...")
+    
+    # [CRITICAL FIX]: यही छुटेको थियो! यसले मधुरोपना हटाएर चटक्क ब्याकग्राउन्ड काट्छ।
+    result = torch.sigmoid(result)
+    
     ma = torch.max(result)
     mi = torch.min(result)
     
