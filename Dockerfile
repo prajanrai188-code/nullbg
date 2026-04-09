@@ -2,18 +2,18 @@ FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
 
 WORKDIR /app
 
-# System dependencies
-RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 wget
+# १. System dependencies इन्स्टल गर्ने
+RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 wget && rm -rf /var/lib/apt/lists/*
 
-# Requirements र छुटेका प्याकेजहरू इन्स्टल गर्ने (पाइथन क्र्यास हुन नदिन)
+# २. Requirements फाइल कपी गर्ने र प्याकेजहरू इन्स्टल गर्ने
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt runpod "numpy<2.0.0"
 
-# सबै फाइलहरू कपी गर्ने
+# ३. तपाईंको बाँकी सबै कोडहरू भित्र लग्ने
 COPY . .
 
-# अघि १००% काम गरेको सही मोडल डाउनलोड गर्ने
-# गलत मोडल हटाएर, पर्फेक्ट म्याच हुने सही मोडल डाउनलोड गर्ने
-RUN rm -f isnet.pth && wget -qO isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
+# ४. सबैभन्दा महत्त्वपूर्ण: सही मोडल (NimaBoscarino) सिधै डाउनलोड गर्ने
+RUN wget -qO isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
 
+# ५. मेसिन ब्युँझाउने कमाण्ड
 CMD ["python", "-u", "worker.py"]
