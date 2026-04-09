@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt runpod "numpy<2.0.0"
 COPY . .
 
 # अघि १००% काम गरेको सही मोडल डाउनलोड गर्ने
-RUN rm -f isnet.pth && wget -qO isnet.pth "https://huggingface.co/doevent/dis/resolve/main/isnet.pth"
+# गलत मोडल हटाएर, पर्फेक्ट म्याच हुने सही मोडल डाउनलोड गर्ने
+RUN rm -f isnet.pth && wget -qO isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
 
 CMD ["python", "-u", "worker.py"]
