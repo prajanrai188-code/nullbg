@@ -1,138 +1,98 @@
-import sys
-import traceback
+import os
+import cv2
+import torch
+import runpod
+import base64
+import numpy as np
+from torchvision.transforms.functional import normalize
+
+# ISNet Model Architecture
+from models.isnet import ISNetDIS
+
+# --- CONFIGURATION ---
+MODEL_PATH = 'isnet.pth'
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def log(msg):
     print(msg, flush=True)
 
-try:
-    log("--> 🟢 [SYSTEM START] Initializing worker...")
-    import os
-    import cv2
-    import torch
-    import runpod
-    import base64
-    import numpy as np
-    from torchvision.transforms.functional import normalize
-
-    cv2.setNumThreads(0)
-    
-    log("--> 🟢 Importing ISNetDIS...")
-    from models.isnet import ISNetDIS
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    MODEL_PATH = 'isnet.pth'
-
-    if not os.path.exists(MODEL_PATH):
-        log(f"--> 🔴 ERROR: Model file {MODEL_PATH} not found!")
-
-    log("--> 🟢 Loading model into GPU...")
+# --- MODEL LOADING ---
+def load_model():
+    log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
-    loaded_data = torch.load(MODEL_PATH, map_location=device)
-    
-    if "state_dict" in loaded_data:
-        state_dict = loaded_data["state_dict"]
-    elif "model" in loaded_data:
-        state_dict = loaded_data["model"]
+    if os.path.exists(MODEL_PATH):
+        # तपाईंको ओरिजिनल तरिका: सही मोडल आएपछि यो १००% पर्फेक्ट लोड हुन्छ!
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        log("--> 🟢 Model loaded perfectly with all brain layers!")
     else:
-        state_dict = loaded_data
+        log("--> 🔴 ERROR: isnet.pth not found! Check Dockerfile.")
         
-    log("--> 🟡 Matching brain layers (The Ultimate Matcher)...")
-    model_state_dict = model.state_dict()
-    new_state_dict = {}
-    matched_count = 0
-    
-    for m_key, m_tensor in model_state_dict.items():
-        found = False
-        # १. ठ्याक्कै मिल्यो भने
-        if m_key in state_dict and state_dict[m_key].shape == m_tensor.shape:
-            new_state_dict[m_key] = state_dict[m_key]
-            matched_count += 1
-            found = True
-            continue
-            
-        # २. अगाडिको नाम (net. वा module.) हटाएर जबरजस्ती मिलाउने
-        clean_m = m_key.replace("module.", "").replace("net.", "")
-        for c_key, c_tensor in state_dict.items():
-            clean_c = c_key.replace("module.", "").replace("net.", "")
-            if clean_m == clean_c and c_tensor.shape == m_tensor.shape:
-                new_state_dict[m_key] = c_tensor
-                matched_count += 1
-                found = True
-                break
-                
-        if not found:
-            new_state_dict[m_key] = m_tensor 
-
-    log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
-
-    model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
-    log("--> 🟢 Model fully loaded with memory!")
+    return model
 
-except Exception as e:
-    log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
-    sys.exit(1)
+# ग्लोबल मोडल अब्जेक्ट
+model = load_model()
 
-# ----------------- MAIN HANDLER -----------------
 def process_image(img_bgr):
-    log("--> 🟡 1. Preprocessing image...")
+    """
+    ISNet प्रयोग गरेर मास्क निकाल्ने र ट्रान्सपरेन्ट इमेज बनाउने
+    """
+    log("--> 🟡 Running Image Processing...")
     h, w = img_bgr.shape[:2]
+    
+    # १. Pre-processing (ISNet input size: 1024x1024)
     input_size = (1024, 1024)
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, input_size, interpolation=cv2.INTER_LINEAR)
     
-    img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).contiguous().float().unsqueeze(0).to(device)
+    # Tensor मा बदल्ने
+    img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float().unsqueeze(0).to(device)
     img_tensor = img_tensor / 255.0
+    # ISNet को लागि standard normalization
     img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
-    log("--> 🟡 2. Running AI inference...")
+    # २. Inference
     with torch.no_grad():
-        preds = model(img_tensor)
-        result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
-        result = torch.squeeze(result)
+        # ISNet ले धेरै वटा म्याप दिन्छ, हामीलाई पहिलो मुख्य म्याप चाहिन्छ
+        result = model(img_tensor)[0][0] 
     
-    log("--> 🟡 3. Post-processing mask (Added Sigmoid Filter)...")
+    # ३. Post-processing (तपाईंको आफ्नै ओरिजिनल म्याथ, जसले १००% काम गर्छ)
+    result = (result - result.min()) / (result.max() - result.min())
+    mask = result.cpu().numpy()
     
-    # [CRITICAL FIX]: यही छुटेको थियो! यसले मधुरोपना हटाएर चटक्क ब्याकग्राउन्ड काट्छ।
-    result = torch.sigmoid(result)
+    # ओरिजिनल साइजमा फर्काउने
+    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+    mask = (mask * 255).astype(np.uint8)
     
-    ma = torch.max(result)
-    mi = torch.min(result)
-    
-    if ma == mi:
-        log("--> 🔴 ERROR: Mask is completely blank!")
-        mask = np.zeros((h, w), dtype=np.uint8)
-    else:
-        result = (result - mi) / (ma - mi + 1e-8)
-        mask = result.cpu().numpy()
-        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-        mask = (mask * 255).astype(np.uint8)
-    
-    log("--> 🟡 4. Merging result...")
+    # ४. Result Merge (PNG with Alpha Channel)
     b, g, r = cv2.split(img_bgr)
     final_rgba = cv2.merge([b, g, r, mask])
     
     return final_rgba
 
 def handler(job):
-    log("\n==================================")
+    """
+    RunPod Serverless Handler (यसले Nest Nepal सँग कुरा गर्छ)
+    """
     log("--> 🔵 [NEW REQUEST RECEIVED]")
     try:
         job_input = job['input']
         
+        # ---> मेसिन ब्युँझाउने (Wake Up) डमी रिक्वेस्ट <---
         if job_input.get("dummy_ping") == "wake_up_machine":
             log("--> 🟢 [WAKE UP PING] Machine is warm and ready!")
-            return {"status": "awake", "message": "Machine is ready!"}
-
-        img_b64 = job_input.get("image", "")
+            return {"status": "awake"}
+        
+        img_b64 = job_input.get("image")
         
         if not img_b64:
             return {"error": "No image data provided"}
 
+        # Base64 मा अगाडि 'data:image/png;base64,' छ भने हटाउने
         if "," in img_b64:
             img_b64 = img_b64.split(",")[1]
 
-        log("--> 🔵 Decoding Base64...")
+        # Base64 बाट फोटो बनाउने
         img_data = base64.b64decode(img_b64)
         nparr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -140,24 +100,21 @@ def handler(job):
         if img is None:
             return {"error": "Invalid image format"}
 
+        # वास्तविक ब्याकग्राउन्ड हटाउने काम यहाँ हुन्छ
         processed_img = process_image(img)
 
-        ph, pw = processed_img.shape[:2]
-        if max(ph, pw) > 1500:
-            scale = 1500 / max(ph, pw)
-            processed_img = cv2.resize(processed_img, (int(pw * scale), int(ph * scale)), interpolation=cv2.INTER_AREA)
-
-        log("--> 🔵 Encoding result to Base64...")
+        # रिजल्टलाई फेरि Base64 मा बदल्ने
         _, buffer = cv2.imencode('.png', processed_img)
         result_b64 = base64.b64encode(buffer).decode('utf-8')
 
-        log("--> 🟢 Successfully finished request!")
+        log("--> 🟢 Request completed successfully!")
         return {"image": result_b64}
 
     except Exception as e:
-        error_msg = traceback.format_exc()
-        log(f"--> 🔴 [EXCEPTION CAUGHT]: {error_msg}")
-        return {"error": str(e), "trace": error_msg}
+        # एरर आएमा जानकारी पठाउने
+        log(f"--> 🔴 ERROR: {str(e)}")
+        return {"error": str(e)}
 
+# RunPod सर्भरलेस इन्जिन सुरु गर्ने
 log("--> 🟢 Starting RunPod Serverless...")
 runpod.serverless.start({"handler": handler})
