@@ -36,43 +36,33 @@ try:
     else:
         state_dict = loaded_data
         
-    # [THE UNIVERSAL MATCHER] - यसले खाली (Blank) आउने समस्या जरैदेखि उखेल्छ!
     log("--> 🟡 Matching brain layers (Universal Matcher)...")
     model_state_dict = model.state_dict()
-    model_keys = set(model_state_dict.keys())
     new_state_dict = {}
     
     matched_count = 0
     for k, v in state_dict.items():
         clean_k = k.replace("module.", "").replace("net.", "")
         
-        # चेक गर्ने ४ वटा तरिकाहरू (कुनै न कुनै एउटा पक्का मिल्छ)
-        possible_keys = [
-            k,
-            clean_k,
-            "net." + clean_k,
-            "module." + clean_k
-        ]
-        
-        matched = False
-        for pk in possible_keys:
-            if pk in model_keys:
-                new_state_dict[pk] = v
-                matched_count += 1
-                matched = True
-                break
-                
-        if not matched:
-            new_state_dict[k] = v # नमिले पनि जस्तो छ त्यस्तै राखिदिने
+        # ३ फरक तरिकाले नाम म्याच गर्न खोज्ने
+        if clean_k in model_state_dict:
+            new_state_dict[clean_k] = v
+            matched_count += 1
+        elif "net." + clean_k in model_state_dict:
+            new_state_dict["net." + clean_k] = v
+            matched_count += 1
+        elif "module." + clean_k in model_state_dict:
+            new_state_dict["module." + clean_k] = v
+            matched_count += 1
 
-    log(f"--> 🟢 Matched {matched_count} out of {len(model_keys)} layers!")
+    log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
 
-    if matched_count == 0:
-        log("--> 🔴 WARNING: Zero layers matched! Image will likely be blank.")
+    if matched_count < len(model_state_dict) * 0.8:
+        log("--> 🔴 FATAL WARNING: Model layers DID NOT match! Image will be faded.")
 
     model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
-    log("--> 🟢 Model fully loaded with perfect memory!")
+    log("--> 🟢 Model fully loaded with memory!")
 
 except Exception as e:
     log(f"--> 🔴 [FATAL STARTUP ERROR]: {traceback.format_exc()}")
@@ -101,7 +91,7 @@ def process_image(img_bgr):
     mi = torch.min(result)
     
     if ma == mi:
-        log("--> 🔴 ERROR: Mask is completely blank (ma == mi)!")
+        log("--> 🔴 ERROR: Mask is completely blank!")
         mask = np.zeros((h, w), dtype=np.uint8)
     else:
         result = (result - mi) / (ma - mi + 1e-8)
