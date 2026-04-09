@@ -142,3 +142,4 @@ def handler(job):
 
 log("--> 🟢 Starting RunPod Serverless...")
 runpod.serverless.start({"handler": handler})
+
