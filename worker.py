@@ -23,14 +23,12 @@ def load_model():
     
     if os.path.exists(MODEL_PATH):
         try:
-            # पहिलो प्रयास: तपाईंको ओरिजिनल तरिका (सीधै लोड गर्ने)
+            # हाम्रो डकरफाइलको मोडल यहाँ १००% पर्फेक्ट लोड हुन्छ
             model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
             log("--> 🟢 Model loaded perfectly via Direct Match!")
         except Exception as e:
-            # यदि नाम मिलेन भने क्र्यास हुन नदिई सेफ तरिकाले लोड गर्ने
-            log("--> 🟡 Direct load failed (Name mismatch). Using Safe Loader...")
+            log("--> 🟡 Direct load failed. Using Safe Loader...")
             loaded_data = torch.load(MODEL_PATH, map_location=device)
-            
             if "state_dict" in loaded_data:
                 state_dict = loaded_data["state_dict"]
             elif "model" in loaded_data:
@@ -40,11 +38,9 @@ def load_model():
                 
             clean_state_dict = {}
             for k, v in state_dict.items():
-                # अनावश्यक नामहरू हटाउने
                 clean_k = k.replace("net.", "").replace("module.", "")
                 clean_state_dict[clean_k] = v
             
-            # strict=False राखेर क्र्यास हुनबाट जोगाउने
             model.load_state_dict(clean_state_dict, strict=False)
             log("--> 🟢 Model loaded safely via Crash-Proof Loader!")
     else:
@@ -57,13 +53,9 @@ def load_model():
 model = load_model()
 
 def process_image(img_bgr):
-    """
-    ISNet प्रयोग गरेर मास्क निकाल्ने र ट्रान्सपरेन्ट इमेज बनाउने
-    """
-    log("--> 🟡 Running Image Processing...")
+    log("--> 🟡 1. Running Image Processing...")
     h, w = img_bgr.shape[:2]
     
-    # १. Pre-processing
     input_size = (1024, 1024)
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, input_size, interpolation=cv2.INTER_LINEAR)
@@ -72,24 +64,44 @@ def process_image(img_bgr):
     img_tensor = img_tensor / 255.0
     img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
-    # २. Inference
+    log("--> 🟡 2. Running AI Inference...")
     with torch.no_grad():
-        result = model(img_tensor)[0][0] 
+        preds = model(img_tensor)
+        if isinstance(preds, (list, tuple)):
+            result = preds[0]
+        else:
+            result = preds
+            
+    # [THE CRITICAL FIX]: 3D लाई 2D मा झार्ने, ताकि OpenCV क्र्यास नहोस्!
+    result = torch.squeeze(result)
     
-    # ३. Post-processing (तपाईंको आफ्नै ओरिजिनल जादुयी म्याथ)
-    result = (result - result.min()) / (result.max() - result.min())
-    mask = result.cpu().numpy()
+    log("--> 🟡 3. Post-processing mask...")
+    ma = torch.max(result)
+    mi = torch.min(result)
     
-    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    mask = (mask * 255).astype(np.uint8)
+    # सेफ्टी चेक: यदि फोटो पूरै खाली छ भने
+    if ma == mi:
+        mask = np.zeros((h, w), dtype=np.uint8)
+    else:
+        result = (result - mi) / (ma - mi + 1e-8)
+        mask = result.cpu().numpy()
+        
+        # [BULLETPROOF SAFETY]: OpenCV को लागि ठ्याक्कै 2D बनाउने
+        mask = np.squeeze(mask)
+        if mask.ndim != 2:
+            mask = mask.reshape((1024, 1024))
+            
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+        mask = (mask * 255).astype(np.uint8)
     
-    # ४. Result Merge
+    log("--> 🟡 4. Merging result...")
     b, g, r = cv2.split(img_bgr)
     final_rgba = cv2.merge([b, g, r, mask])
     
     return final_rgba
 
 def handler(job):
+    log("\n==================================")
     log("--> 🔵 [NEW REQUEST RECEIVED]")
     try:
         job_input = job['input']
@@ -99,13 +111,13 @@ def handler(job):
             return {"status": "awake"}
         
         img_b64 = job_input.get("image")
-        
         if not img_b64:
             return {"error": "No image data provided"}
 
         if "," in img_b64:
             img_b64 = img_b64.split(",")[1]
 
+        log("--> 🔵 Decoding Base64...")
         img_data = base64.b64decode(img_b64)
         nparr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -115,17 +127,18 @@ def handler(job):
 
         processed_img = process_image(img)
 
+        log("--> 🔵 Encoding result to Base64...")
         _, buffer = cv2.imencode('.png', processed_img)
         result_b64 = base64.b64encode(buffer).decode('utf-8')
 
-        log("--> 🟢 Request completed successfully!")
+        log("--> 🟢 Successfully finished request!")
         return {"image": result_b64}
 
     except Exception as e:
         import traceback
-        log(f"--> 🔴 ERROR: {traceback.format_exc()}")
-        return {"error": str(e)}
+        error_msg = traceback.format_exc()
+        log(f"--> 🔴 ERROR: {error_msg}")
+        return {"error": str(e), "trace": error_msg}
 
-# RunPod सर्भरलेस इन्जिन सुरु गर्ने
 log("--> 🟢 Starting RunPod Serverless...")
 runpod.serverless.start({"handler": handler})
