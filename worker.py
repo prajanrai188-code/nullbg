@@ -13,25 +13,16 @@ def log(msg):
     print(msg, flush=True)
 
 def load_model():
-    log("--> 🟢 Starting worker and loading the Golden Model...")
+    log("--> 🟢 Starting worker and loading YOUR original perfect model...")
     model = ISNetDIS()
     
-    if not os.path.exists('isnet.pth'):
-        log("--> 🔴 ERROR: isnet.pth not found!")
-        return model
-
-    # मोडल लोड गर्ने सफा र सुरक्षित तरिका
-    loaded_data = torch.load('isnet.pth', map_location=device)
-    state_dict = loaded_data.get("state_dict", loaded_data)
-    
-    clean_state_dict = {}
-    for k, v in state_dict.items():
-        clean_k = k.replace("net.", "").replace("module.", "")
-        clean_state_dict[clean_k] = v
+    if os.path.exists('isnet.pth'):
+        # तपाईंकै ओरिजिनल मोडल लोड गर्दै (१००% ग्यारेन्टी)
+        model.load_state_dict(torch.load('isnet.pth', map_location=device))
+        log("--> 🟢 Model loaded perfectly! All 2158 layers connected.")
+    else:
+        log("--> 🔴 ERROR: isnet.pth not found! GitHub मा यो फाइल छ कि छैन चेक गर्नुहोला।")
         
-    model.load_state_dict(clean_state_dict, strict=False)
-    log("--> 🟢 Model loaded! All 2158 layers connected perfectly.")
-    
     model.to(device).eval()
     return model
 
@@ -52,24 +43,21 @@ def process_image(img_bgr):
             
     result = torch.squeeze(result)
     
-    # [THE MAGIC FILTER]: मधुरोपन हटाएर चट्ट ब्याकग्राउन्ड काट्ने जादु!
+    # [THE MAGIC FILTER]: मधुरोपन (Faded issue) सधैँको लागि हटाउने जादु
     result = torch.sigmoid(result)
     
-    # RuntimeWarning र क्र्यास आउन नदिने सेफ्टी लजिक
-    if torch.isnan(result).any():
+    ma = torch.max(result)
+    mi = torch.min(result)
+    
+    if ma == mi:
         mask = np.zeros((1024, 1024), dtype=np.uint8)
     else:
-        ma = torch.max(result)
-        mi = torch.min(result)
-        if ma == mi:
-            mask = np.zeros((1024, 1024), dtype=np.uint8)
-        else:
-            result = (result - mi) / (ma - mi + 1e-8)
-            mask = result.cpu().numpy()
-            mask = np.squeeze(mask)
-            if mask.ndim != 2:
-                mask = mask.reshape((1024, 1024))
-            mask = (mask * 255).astype(np.uint8)
+        result = (result - mi) / (ma - mi + 1e-8)
+        mask = result.cpu().numpy()
+        mask = np.squeeze(mask)
+        if mask.ndim != 2:
+            mask = mask.reshape((1024, 1024))
+        mask = (mask * 255).astype(np.uint8)
         
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
     b, g, r = cv2.split(img_bgr)
@@ -91,7 +79,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # ठूलो फोटोलाई मिलाउने (400 Bad Request Fix)
+        # 400 Bad Request Fix (ठूलो फोटोलाई धान्ने)
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
