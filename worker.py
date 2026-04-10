@@ -13,46 +13,57 @@ def log(msg):
     print(msg, flush=True)
 
 def load_model():
-    log("--> 🟢 Starting worker and loading model...")
+    log("--> 🟢 Starting worker and loading the Golden Model...")
     model = ISNetDIS()
     
     if os.path.exists('isnet.pth'):
         checkpoint = torch.load('isnet.pth', map_location=device)
-        state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
         
-        log("--> 🟡 Running The Brute-Force Shape Matcher...")
-        
-        # १. मोडलमा चाहिने नसाहरू (Parameters) को लिस्ट
-        model_keys = [k for k in model.state_dict().keys()]
-        
-        # २. फाइलमा भएका नसाहरू (Tensors) बाट फोहोर हटाउने
-        # 'num_batches_tracked' जस्ता कुराहरूले संख्या बिगार्छन्, त्यसैले तिनलाई हटाउने
-        file_keys = [k for k in state_dict.keys() if "num_batches_tracked" not in k]
-        
+        # १. यदि मोडल फाइल भित्र 'model' वा 'state_dict' भन्ने बाकस छ भने त्यसलाई खोल्ने
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
+        else:
+            state_dict = checkpoint
+            
+        # २. [THE FORCED LOADER]: नामलाई पूरै वास्ता नगरी साइज मात्र मिलाएर लोड गर्ने
+        model_dict = model.state_dict()
         new_state_dict = {}
         matched_count = 0
+
+        # फाइलमा भएका सबै डाटाहरूलाई सफा गरेर एउटा लिस्ट बनाउने
+        source_params = []
+        for k, v in state_dict.items():
+            if "num_batches_tracked" not in k: # अनावश्यक फोहोर हटाउने
+                source_params.append(v)
+
+        # मोडलमा चाहिने नसाहरूको लिस्ट
+        target_keys = list(model_dict.keys())
+
+        log(f"--> 🟡 Attempting to force-load {len(target_keys)} layers...")
+
+        # ३. लाइनै पिछे नसा जोड्ने (Brute Force)
+        if len(source_params) >= len(target_keys):
+            for i in range(len(target_keys)):
+                if target_keys[i] in model_dict and model_dict[target_keys[i]].shape == source_params[i].shape:
+                    new_state_dict[target_keys[i]] = source_params[i]
+                    matched_count += 1
         
-        # ३. यदि संख्या मिल्यो भने लाइनै पिछे जोड्ने
-        if len(model_keys) == len(file_keys):
-            log(f"--> 🟢 Perfect Count Match! Mapping {len(model_keys)} layers sequentially...")
-            for i in range(len(model_keys)):
-                new_state_dict[model_keys[i]] = state_dict[file_keys[i]]
-                matched_count += 1
-        else:
-            log(f"--> 🟡 Count Mismatch (Model: {len(model_keys)}, File: {len(file_keys)}). Using Smart Suffix Matching...")
-            # यदि संख्या मिलेन भने पछाडिको नाम (Suffix) हेरेर जोड्ने
-            model_dict = model.state_dict()
+        # यदि माथिको तरिकाले काम गरेन भने 'स्मार्ट नाम म्याचिङ' गर्ने
+        if matched_count < 2000:
+            log("--> 🟡 Force-load failed. Falling back to Smart Name Matching...")
+            new_state_dict = {}
+            matched_count = 0
             for m_key in model_dict.keys():
-                clean_m = m_key.split('.')[-2:] # अन्तिम दुइटा भाग (उदा: conv.weight)
-                for s_key in state_dict.keys():
-                    clean_s = s_key.split('.')[-2:]
-                    if clean_m == clean_s and model_dict[m_key].shape == state_dict[s_key].shape:
-                        new_state_dict[m_key] = state_dict[s_key]
+                clean_m = m_key.replace("module.", "").replace("net.", "")
+                for s_key, s_val in state_dict.items():
+                    clean_s = s_key.replace("module.", "").replace("net.", "")
+                    if clean_m == clean_s and model_dict[m_key].shape == s_val.shape:
+                        new_state_dict[m_key] = s_val
                         matched_count += 1
                         break
 
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"--> 🟢 FINAL RESULT: Matched {matched_count} out of {len(model_keys)} layers!")
+        log(f"--> 🟢 FINAL SUCCESS: Matched {matched_count} out of {len(target_keys)} layers!")
     else:
         log("--> 🔴 ERROR: isnet.pth not found!")
         
@@ -75,7 +86,7 @@ def process_image(img_bgr):
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
             
     result = torch.squeeze(result)
-    result = torch.sigmoid(result) # मधुरोपन हटाउन
+    result = torch.sigmoid(result) # मधुरोपन हटाउने मुख्य जादु
     
     mask = result.cpu().numpy()
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
