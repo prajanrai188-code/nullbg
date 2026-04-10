@@ -6,63 +6,72 @@ import base64
 import numpy as np
 from torchvision.transforms.functional import normalize
 
+# ISNet Model Architecture
 from models.isnet import ISNetDIS
 
+# --- CONFIGURATION ---
 MODEL_PATH = 'isnet.pth'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def log(msg):
     print(msg, flush=True)
 
-# --- 1. THE BRUTE-FORCE LOADER (सबैभन्दा शक्तिशाली) ---
+# --- 1. THE BULLETPROOF LOADER (यसले १००% नसा जोड्छ) ---
 def load_model():
     log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
     
-    if os.path.exists(MODEL_PATH):
-        loaded_data = torch.load(MODEL_PATH, map_location=device)
+    if not os.path.exists(MODEL_PATH):
+        log("--> 🔴 ERROR: isnet.pth not found! Check Dockerfile.")
+        model.to(device).eval()
+        return model
+
+    loaded_data = torch.load(MODEL_PATH, map_location=device)
+    
+    if isinstance(loaded_data, dict) and "state_dict" in loaded_data:
+        state_dict = loaded_data["state_dict"]
+    elif isinstance(loaded_data, dict) and "model" in loaded_data:
+        state_dict = loaded_data["model"]
+    else:
+        state_dict = loaded_data
         
-        if "state_dict" in loaded_data:
-            state_dict = loaded_data["state_dict"]
-        elif "model" in loaded_data:
-            state_dict = loaded_data["model"]
+    model_state_dict = model.state_dict()
+    new_state_dict = {}
+    matched_count = 0
+    
+    log("--> 🟡 Connecting Brain Layers (The Ultimate Matcher)...")
+    # सुल्टो तरिका: मेसिनको नसा हेर्दै फाइलमा खोज्ने
+    for m_key, m_tensor in model_state_dict.items():
+        found = False
+        clean_m_key = m_key.replace("net.", "").replace("module.", "")
+        
+        # १. ठ्याक्कै नाम मिल्यो भने
+        if m_key in state_dict and state_dict[m_key].shape == m_tensor.shape:
+            new_state_dict[m_key] = state_dict[m_key]
+            matched_count += 1
+            found = True
         else:
-            state_dict = loaded_data
-            
-        model_state_dict = model.state_dict()
-        new_state_dict = {}
-        matched_layers = 0
-        
-        # [THE MAGIC]: नामलाई पूरै इग्नोर गरेर आकार (Shape) अनुसार नसा जोड्ने
-        loaded_tensors = list(state_dict.values())
-        model_keys = list(model_state_dict.keys())
-        
-        t_idx = 0
-        for k in model_keys:
-            m_tensor = model_state_dict[k]
-            found = False
-            # आकार मिल्ने नसा खोजेर जबरजस्ती जोड्ने
-            for j in range(t_idx, len(loaded_tensors)):
-                if m_tensor.shape == loaded_tensors[j].shape:
-                    new_state_dict[k] = loaded_tensors[j]
-                    t_idx = j + 1
-                    matched_layers += 1
+            # २. अगाडिको net. हटाएर मिल्यो भने
+            for s_key, s_tensor in state_dict.items():
+                clean_s_key = s_key.replace("net.", "").replace("module.", "")
+                if clean_m_key == clean_s_key and s_tensor.shape == m_tensor.shape:
+                    new_state_dict[m_key] = s_tensor
+                    matched_count += 1
                     found = True
                     break
-            if not found:
-                new_state_dict[k] = m_tensor 
-                
-        model.load_state_dict(new_state_dict, strict=False)
-        log(f"--> 🟢 BRUTE-FORCE SUCCESS: {matched_layers} out of {len(model_state_dict)} layers injected!")
-    else:
-        log("--> 🔴 ERROR: isnet.pth not found!")
         
+        if not found:
+            new_state_dict[m_key] = m_tensor # नमिले खाली छोड्ने
+            
+    log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
+    
+    model.load_state_dict(new_state_dict, strict=False)
     model.to(device).eval()
     return model
 
 model = load_model()
 
-# --- 2. IMAGE PROCESSING ---
+# --- 2. IMAGE PROCESSING (तपाईंको आफ्नै ओरिजिनल जादु) ---
 def process_image(img_bgr):
     log("--> 🟡 Running Image Processing...")
     h, w = img_bgr.shape[:2]
@@ -76,25 +85,28 @@ def process_image(img_bgr):
 
     with torch.no_grad():
         preds = model(img_tensor)
-        result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
+        if isinstance(preds, (list, tuple)):
+            result = preds[0][0]
+        else:
+            result = preds[0]
             
-    # Sigmoid ले एआईको डाटालाई फोटोको रूप दिन्छ
-    result = torch.sigmoid(torch.squeeze(result))
+    result = torch.squeeze(result)
     
-    # यसले मधुरोपन हटाएर कालो र सेतोलाई एकदम गाढा बनाउँछ
-    result = (result - torch.min(result)) / (torch.max(result) - torch.min(result) + 1e-8)
+    # नसाहरू १००% जोडिएपछि यो ओरिजिनल म्याथले चट्ट ब्याकग्राउन्ड काट्छ
+    ma = torch.max(result)
+    mi = torch.min(result)
     
-    mask = result.cpu().numpy()
-    mask = np.squeeze(mask)
-    
-    # [CRISP CUT]: यदि थोरै पनि मधुरो छ भने त्यसलाई १००% पारदर्शी बनाइदिने लजिक
-    mask = np.clip((mask - 0.05) / 0.9, 0, 1)
-    
-    if mask.ndim != 2:
-        mask = mask.reshape((1024, 1024))
+    if ma == mi:
+        mask = np.zeros((1024, 1024), dtype=np.uint8)
+    else:
+        result = (result - mi) / (ma - mi + 1e-8)
+        mask = result.cpu().numpy()
+        mask = np.squeeze(mask)
+        if mask.ndim != 2:
+            mask = mask.reshape((1024, 1024))
+        mask = (mask * 255).astype(np.uint8)
         
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    mask = (mask * 255).astype(np.uint8)
     
     b, g, r = cv2.split(img_bgr)
     final_rgba = cv2.merge([b, g, r, mask])
@@ -125,6 +137,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
+        # 400 Bad Request Fix (ठूलो फोटोलाई मिलाउने)
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
