@@ -6,46 +6,54 @@ import base64
 import numpy as np
 from torchvision.transforms.functional import normalize
 
-# ISNet Model Architecture
 from models.isnet import ISNetDIS
 
-# --- CONFIGURATION ---
 MODEL_PATH = 'isnet.pth'
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def log(msg):
     print(msg, flush=True)
 
-# --- 1. MODEL LOADER ---
+# --- 1. THE BRUTE-FORCE LOADER (सबैभन्दा शक्तिशाली) ---
 def load_model():
     log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
+    
     if os.path.exists(MODEL_PATH):
         loaded_data = torch.load(MODEL_PATH, map_location=device)
         
-        # Safely extract state_dict
-        if isinstance(loaded_data, dict) and "state_dict" in loaded_data:
+        if "state_dict" in loaded_data:
             state_dict = loaded_data["state_dict"]
-        elif isinstance(loaded_data, dict) and "model" in loaded_data:
+        elif "model" in loaded_data:
             state_dict = loaded_data["model"]
         else:
             state_dict = loaded_data
             
-        try:
-            model.load_state_dict(state_dict, strict=True)
-            log("--> 🟢 Model loaded PERFECTLY (Strict Match)!")
-        except Exception:
-            log("--> 🟡 Strict load failed. Using generic mapper...")
-            model_keys = model.state_dict().keys()
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                clean_k = k.replace("net.", "").replace("module.", "")
-                if clean_k in model_keys:
-                    new_state_dict[clean_k] = v
-                else:
-                    new_state_dict[k] = v
-            model.load_state_dict(new_state_dict, strict=False)
-            log("--> 🟢 Model loaded via generic mapper!")
+        model_state_dict = model.state_dict()
+        new_state_dict = {}
+        matched_layers = 0
+        
+        # [THE MAGIC]: नामलाई पूरै इग्नोर गरेर आकार (Shape) अनुसार नसा जोड्ने
+        loaded_tensors = list(state_dict.values())
+        model_keys = list(model_state_dict.keys())
+        
+        t_idx = 0
+        for k in model_keys:
+            m_tensor = model_state_dict[k]
+            found = False
+            # आकार मिल्ने नसा खोजेर जबरजस्ती जोड्ने
+            for j in range(t_idx, len(loaded_tensors)):
+                if m_tensor.shape == loaded_tensors[j].shape:
+                    new_state_dict[k] = loaded_tensors[j]
+                    t_idx = j + 1
+                    matched_layers += 1
+                    found = True
+                    break
+            if not found:
+                new_state_dict[k] = m_tensor 
+                
+        model.load_state_dict(new_state_dict, strict=False)
+        log(f"--> 🟢 BRUTE-FORCE SUCCESS: {matched_layers} out of {len(model_state_dict)} layers injected!")
     else:
         log("--> 🔴 ERROR: isnet.pth not found!")
         
@@ -68,16 +76,20 @@ def process_image(img_bgr):
 
     with torch.no_grad():
         preds = model(img_tensor)
-        if isinstance(preds, (list, tuple)):
-            result = preds[0][0]
-        else:
-            result = preds[0]
-
-    # [THE MAGIC FIX]: यही Sigmoid ले गर्दा अब ब्याकग्राउन्ड चट्ट काटिन्छ र मधुरो हुँदैन!
-    result = torch.sigmoid(result)
+        result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
+            
+    # Sigmoid ले एआईको डाटालाई फोटोको रूप दिन्छ
+    result = torch.sigmoid(torch.squeeze(result))
+    
+    # यसले मधुरोपन हटाएर कालो र सेतोलाई एकदम गाढा बनाउँछ
+    result = (result - torch.min(result)) / (torch.max(result) - torch.min(result) + 1e-8)
     
     mask = result.cpu().numpy()
     mask = np.squeeze(mask)
+    
+    # [CRISP CUT]: यदि थोरै पनि मधुरो छ भने त्यसलाई १००% पारदर्शी बनाइदिने लजिक
+    mask = np.clip((mask - 0.05) / 0.9, 0, 1)
+    
     if mask.ndim != 2:
         mask = mask.reshape((1024, 1024))
         
@@ -113,7 +125,6 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # 400 Bad Request Fix
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
