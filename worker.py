@@ -13,34 +13,46 @@ def log(msg):
     print(msg, flush=True)
 
 def load_model():
-    log("--> 🟢 Starting worker and loading the Golden Model...")
+    log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
     
     if os.path.exists('isnet.pth'):
         checkpoint = torch.load('isnet.pth', map_location=device)
-        state_dict = checkpoint.get("state_dict", checkpoint)
+        state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
         
-        model_state_dict = model.state_dict()
+        log("--> 🟡 Running The Brute-Force Shape Matcher...")
+        
+        # १. मोडलमा चाहिने नसाहरू (Parameters) को लिस्ट
+        model_keys = [k for k in model.state_dict().keys()]
+        
+        # २. फाइलमा भएका नसाहरू (Tensors) बाट फोहोर हटाउने
+        # 'num_batches_tracked' जस्ता कुराहरूले संख्या बिगार्छन्, त्यसैले तिनलाई हटाउने
+        file_keys = [k for k in state_dict.keys() if "num_batches_tracked" not in k]
+        
         new_state_dict = {}
         matched_count = 0
         
-        log("--> 🟡 Running Smart Layer Matching...")
-        # नामहरू मिलाएर जोड्ने सबैभन्दा बलियो लजिक
-        for m_key in model_state_dict.keys():
-            clean_m = m_key.replace("module.", "").replace("net.", "")
-            found = False
-            for s_key, s_val in state_dict.items():
-                clean_s = s_key.replace("module.", "").replace("net.", "")
-                if clean_m == clean_s and model_state_dict[m_key].shape == s_val.shape:
-                    new_state_dict[m_key] = s_val
-                    matched_count += 1
-                    found = True
-                    break
-            if not found:
-                new_state_dict[m_key] = model_state_dict[m_key]
-        
+        # ३. यदि संख्या मिल्यो भने लाइनै पिछे जोड्ने
+        if len(model_keys) == len(file_keys):
+            log(f"--> 🟢 Perfect Count Match! Mapping {len(model_keys)} layers sequentially...")
+            for i in range(len(model_keys)):
+                new_state_dict[model_keys[i]] = state_dict[file_keys[i]]
+                matched_count += 1
+        else:
+            log(f"--> 🟡 Count Mismatch (Model: {len(model_keys)}, File: {len(file_keys)}). Using Smart Suffix Matching...")
+            # यदि संख्या मिलेन भने पछाडिको नाम (Suffix) हेरेर जोड्ने
+            model_dict = model.state_dict()
+            for m_key in model_dict.keys():
+                clean_m = m_key.split('.')[-2:] # अन्तिम दुइटा भाग (उदा: conv.weight)
+                for s_key in state_dict.keys():
+                    clean_s = s_key.split('.')[-2:]
+                    if clean_m == clean_s and model_dict[m_key].shape == state_dict[s_key].shape:
+                        new_state_dict[m_key] = state_dict[s_key]
+                        matched_count += 1
+                        break
+
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"--> 🟢 SUCCESS: Matched {matched_count} out of 2158 layers!")
+        log(f"--> 🟢 FINAL RESULT: Matched {matched_count} out of {len(model_keys)} layers!")
     else:
         log("--> 🔴 ERROR: isnet.pth not found!")
         
@@ -63,9 +75,7 @@ def process_image(img_bgr):
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
             
     result = torch.squeeze(result)
-    
-    # [THE MAGIC FIX]: यसले फोटोलाई मधुरो हुन दिँदैन, चट्ट ब्याकग्राउन्ड काट्छ
-    result = torch.sigmoid(result)
+    result = torch.sigmoid(result) # मधुरोपन हटाउन
     
     mask = result.cpu().numpy()
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -79,7 +89,7 @@ def handler(job):
         job_input = job['input']
         if job_input.get("dummy_ping") == "wake_up_machine":
             return {"status": "awake"}
-        
+            
         img_b64 = job_input.get("image", "")
         if "," in img_b64:
             img_b64 = img_b64.split(",")[1]
@@ -89,7 +99,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # ठूलो फोटोलाई मिलाउने
+        # 400 Bad Request Fix
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
