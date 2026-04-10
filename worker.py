@@ -18,41 +18,45 @@ def load_model():
     
     if os.path.exists('isnet.pth'):
         checkpoint = torch.load('isnet.pth', map_location=device)
+        state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
         
-        # १. यदि मोडल नेस्टेड छ भने भित्रबाट डाटा निकाल्ने
-        if isinstance(checkpoint, dict):
-            state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
-        else:
-            state_dict = checkpoint
-            
-        model_state_dict = model.state_dict()
+        # १. नसाहरूलाई लिस्टमा निकाल्ने (Order-based matching)
+        model_params = list(model.state_dict().items())
+        file_params = list(state_dict.items())
+        
         new_state_dict = {}
         matched_count = 0
         
-        # २. [THE OVER-AGGRESSIVE MATCHER]: नसाका नामहरू जे भए पनि मिलाउने
-        log("--> 🟡 Running Over-Aggressive Layer Matching...")
+        log(f"--> 🟡 Attempting Shape-Blind Mapping for {len(model_params)} layers...")
         
-        # मोडलमा चाहिने सबै नसाहरू स्क्यान गर्ने
-        for m_key, m_param in model_state_dict.items():
-            # नसाको नामबाट net. वा module. जस्ता फोहोर सफा गर्ने
-            clean_m_key = m_key.replace("module.", "").replace("net.", "")
-            
-            found = False
-            for s_key, s_param in state_dict.items():
-                clean_s_key = s_key.replace("module.", "").replace("net.", "")
+        # २. [THE NUCLEAR MATCHER]: नाम होइन, साइज हेरेर जोड्ने
+        if len(model_params) == len(file_params):
+            for i in range(len(model_params)):
+                m_key, m_val = model_params[i]
+                s_key, s_val = file_params[i]
                 
-                # यदि नाम र साइज दुवै मिल्यो भने जोड्ने
-                if clean_m_key == clean_s_key and m_param.shape == s_param.shape:
-                    new_state_dict[m_key] = s_param
+                if m_val.shape == s_val.shape:
+                    new_state_dict[m_key] = s_val
                     matched_count += 1
-                    found = True
-                    break
-            
-            if not found:
-                new_state_dict[m_key] = m_param # नाम नमिले खाली छोड्ने
-        
+                else:
+                    new_state_dict[m_key] = m_val # नमिले पुरानै राख्ने
+        else:
+            log("--> 🔴 WARNING: Layer count mismatch! Falling back to fuzzy name matching.")
+            # यदि संख्या नै मिलेन भने पुरानो फज्जी म्याचर चलाउने
+            for m_key, m_val in model.state_dict().items():
+                clean_m = m_key.replace("module.", "").replace("net.", "")
+                found = False
+                for s_key, s_val in state_dict.items():
+                    clean_s = s_key.replace("module.", "").replace("net.", "")
+                    if clean_m == clean_s and m_val.shape == s_val.shape:
+                        new_state_dict[m_key] = s_val
+                        matched_count += 1
+                        found = True
+                        break
+                if not found: new_state_dict[m_key] = m_val
+
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"--> 🟢 SUCCESS: Matched {matched_count} out of {len(model_state_dict)} layers!")
+        log(f"--> 🟢 FINALLY Matched {matched_count} out of {len(model_params)} layers!")
     else:
         log("--> 🔴 ERROR: isnet.pth not found!")
         
@@ -76,7 +80,7 @@ def process_image(img_bgr):
             
     result = torch.squeeze(result)
     
-    # [SIGMOID MAGIC]: यसले मधुरोपन हटाएर चट्ट ब्याकग्राउन्ड काट्छ
+    # जादुयी फिल्टर: मधुरोपन हटाउन
     result = torch.sigmoid(result)
     
     mask = result.cpu().numpy()
@@ -93,12 +97,12 @@ def handler(job):
         if "," in img_b64:
             img_b64 = img_b64.split(",")[1]
 
-        img_data = base64.b64decode(img_b64)
+        img_data = base64.decodebytes(img_b64.encode('utf-8'))
         img = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
 
         processed_img = process_image(img)
 
-        # ठूलो फोटोलाई साइज मिलाउने
+        # 400 Bad Request Fix
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
