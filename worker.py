@@ -17,22 +17,42 @@ def load_model():
     model = ISNetDIS()
     
     if os.path.exists('isnet.pth'):
-        loaded_data = torch.load('isnet.pth', map_location=device)
-        state_dict = loaded_data.get("state_dict", loaded_data)
+        checkpoint = torch.load('isnet.pth', map_location=device)
         
-        # नसाहरू जोड्ने स्मार्ट तरिका (Stripping 'net.' or 'module.' prefixes)
+        # १. यदि मोडल नेस्टेड छ भने भित्रबाट डाटा निकाल्ने
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
+        else:
+            state_dict = checkpoint
+            
         model_state_dict = model.state_dict()
         new_state_dict = {}
         matched_count = 0
         
-        for k, v in state_dict.items():
-            new_key = k.replace("module.", "").replace("net.", "")
-            if new_key in model_state_dict:
-                new_state_dict[new_key] = v
-                matched_count += 1
+        # २. [THE OVER-AGGRESSIVE MATCHER]: नसाका नामहरू जे भए पनि मिलाउने
+        log("--> 🟡 Running Over-Aggressive Layer Matching...")
+        
+        # मोडलमा चाहिने सबै नसाहरू स्क्यान गर्ने
+        for m_key, m_param in model_state_dict.items():
+            # नसाको नामबाट net. वा module. जस्ता फोहोर सफा गर्ने
+            clean_m_key = m_key.replace("module.", "").replace("net.", "")
+            
+            found = False
+            for s_key, s_param in state_dict.items():
+                clean_s_key = s_key.replace("module.", "").replace("net.", "")
+                
+                # यदि नाम र साइज दुवै मिल्यो भने जोड्ने
+                if clean_m_key == clean_s_key and m_param.shape == s_param.shape:
+                    new_state_dict[m_key] = s_param
+                    matched_count += 1
+                    found = True
+                    break
+            
+            if not found:
+                new_state_dict[m_key] = m_param # नाम नमिले खाली छोड्ने
         
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"--> 🟢 Success: Matched {matched_count} layers perfectly!")
+        log(f"--> 🟢 SUCCESS: Matched {matched_count} out of {len(model_state_dict)} layers!")
     else:
         log("--> 🔴 ERROR: isnet.pth not found!")
         
@@ -56,10 +76,9 @@ def process_image(img_bgr):
             
     result = torch.squeeze(result)
     
-    # जादुयी फिल्टर: यसले मधुरोपन हटाएर ब्याकग्राउन्ड चट्ट काट्छ
+    # [SIGMOID MAGIC]: यसले मधुरोपन हटाएर चट्ट ब्याकग्राउन्ड काट्छ
     result = torch.sigmoid(result)
     
-    # मास्क तयार गर्ने
     mask = result.cpu().numpy()
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
     mask = (mask * 255).astype(np.uint8)
