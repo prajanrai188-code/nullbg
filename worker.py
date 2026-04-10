@@ -16,42 +16,32 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def log(msg):
     print(msg, flush=True)
 
-# --- 1. THE BULLETPROOF LOADER (यसले १००% नसा जोड्छ) ---
+# --- 1. THE ULTIMATE LOADER (सबै २१५८ नसा जोड्ने) ---
 def load_model():
     log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
     
-    if not os.path.exists(MODEL_PATH):
-        log("--> 🔴 ERROR: isnet.pth not found! Check Dockerfile.")
-        model.to(device).eval()
-        return model
-
-    loaded_data = torch.load(MODEL_PATH, map_location=device)
-    
-    if isinstance(loaded_data, dict) and "state_dict" in loaded_data:
-        state_dict = loaded_data["state_dict"]
-    elif isinstance(loaded_data, dict) and "model" in loaded_data:
-        state_dict = loaded_data["model"]
-    else:
-        state_dict = loaded_data
+    if os.path.exists(MODEL_PATH):
+        loaded_data = torch.load(MODEL_PATH, map_location=device)
         
-    model_state_dict = model.state_dict()
-    new_state_dict = {}
-    matched_count = 0
-    
-    log("--> 🟡 Connecting Brain Layers (The Ultimate Matcher)...")
-    # सुल्टो तरिका: मेसिनको नसा हेर्दै फाइलमा खोज्ने
-    for m_key, m_tensor in model_state_dict.items():
-        found = False
-        clean_m_key = m_key.replace("net.", "").replace("module.", "")
-        
-        # १. ठ्याक्कै नाम मिल्यो भने
-        if m_key in state_dict and state_dict[m_key].shape == m_tensor.shape:
-            new_state_dict[m_key] = state_dict[m_key]
-            matched_count += 1
-            found = True
+        # फाइलबाट डाटा निकाल्ने
+        if isinstance(loaded_data, dict) and "state_dict" in loaded_data:
+            state_dict = loaded_data["state_dict"]
+        elif isinstance(loaded_data, dict) and "model" in loaded_data:
+            state_dict = loaded_data["model"]
         else:
-            # २. अगाडिको net. हटाएर मिल्यो भने
+            state_dict = loaded_data
+            
+        model_keys = model.state_dict()
+        new_state_dict = {}
+        matched_count = 0
+        
+        log("--> 🟡 Connecting Brain Layers (Ultimate Matcher)...")
+        # मेसिनको नसा अनुसार फाइलबाट डाटा खोजेर जोड्ने
+        for m_key, m_tensor in model_keys.items():
+            clean_m_key = m_key.replace("net.", "").replace("module.", "")
+            found = False
+            
             for s_key, s_tensor in state_dict.items():
                 clean_s_key = s_key.replace("net.", "").replace("module.", "")
                 if clean_m_key == clean_s_key and s_tensor.shape == m_tensor.shape:
@@ -59,19 +49,21 @@ def load_model():
                     matched_count += 1
                     found = True
                     break
-        
-        if not found:
-            new_state_dict[m_key] = m_tensor # नमिले खाली छोड्ने
             
-    log(f"--> 🟢 Matched {matched_count} out of {len(model_state_dict)} layers!")
-    
-    model.load_state_dict(new_state_dict, strict=False)
+            if not found:
+                new_state_dict[m_key] = m_tensor
+
+        log(f"--> 🟢 Matched {matched_count} out of {len(model_keys)} layers!")
+        model.load_state_dict(new_state_dict, strict=False)
+    else:
+        log("--> 🔴 ERROR: isnet.pth not found!")
+        
     model.to(device).eval()
     return model
 
 model = load_model()
 
-# --- 2. IMAGE PROCESSING (तपाईंको आफ्नै ओरिजिनल जादु) ---
+# --- 2. IMAGE PROCESSING (तपाईंको आफ्नै ओरिजिनल म्याथ) ---
 def process_image(img_bgr):
     log("--> 🟡 Running Image Processing...")
     h, w = img_bgr.shape[:2]
@@ -90,23 +82,23 @@ def process_image(img_bgr):
         else:
             result = preds[0]
             
+    # OpenCV क्र्यास हुन नदिन 3D लाई 2D बनाउने
     result = torch.squeeze(result)
     
-    # नसाहरू १००% जोडिएपछि यो ओरिजिनल म्याथले चट्ट ब्याकग्राउन्ड काट्छ
+    # रिजल्टलाई सुधार्ने
     ma = torch.max(result)
     mi = torch.min(result)
     
     if ma == mi:
-        mask = np.zeros((1024, 1024), dtype=np.uint8)
+        mask = np.zeros((h, w), dtype=np.uint8)
     else:
         result = (result - mi) / (ma - mi + 1e-8)
         mask = result.cpu().numpy()
         mask = np.squeeze(mask)
         if mask.ndim != 2:
             mask = mask.reshape((1024, 1024))
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
         mask = (mask * 255).astype(np.uint8)
-        
-    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
     
     b, g, r = cv2.split(img_bgr)
     final_rgba = cv2.merge([b, g, r, mask])
@@ -137,7 +129,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # 400 Bad Request Fix (ठूलो फोटोलाई मिलाउने)
+        # ठूलो फोटोलाई RunPod ले धान्न सक्ने गरी मिलाउने
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
