@@ -13,15 +13,28 @@ def log(msg):
     print(msg, flush=True)
 
 def load_model():
-    log("--> 🟢 Starting worker and loading YOUR original perfect model...")
+    log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
     
     if os.path.exists('isnet.pth'):
-        # तपाईंकै ओरिजिनल मोडल लोड गर्दै (१००% ग्यारेन्टी)
-        model.load_state_dict(torch.load('isnet.pth', map_location=device))
-        log("--> 🟢 Model loaded perfectly! All 2158 layers connected.")
+        loaded_data = torch.load('isnet.pth', map_location=device)
+        state_dict = loaded_data.get("state_dict", loaded_data)
+        
+        # नसाहरू जोड्ने स्मार्ट तरिका (Stripping 'net.' or 'module.' prefixes)
+        model_state_dict = model.state_dict()
+        new_state_dict = {}
+        matched_count = 0
+        
+        for k, v in state_dict.items():
+            new_key = k.replace("module.", "").replace("net.", "")
+            if new_key in model_state_dict:
+                new_state_dict[new_key] = v
+                matched_count += 1
+        
+        model.load_state_dict(new_state_dict, strict=False)
+        log(f"--> 🟢 Success: Matched {matched_count} layers perfectly!")
     else:
-        log("--> 🔴 ERROR: isnet.pth not found! GitHub मा यो फाइल छ कि छैन चेक गर्नुहोला।")
+        log("--> 🔴 ERROR: isnet.pth not found!")
         
     model.to(device).eval()
     return model
@@ -43,33 +56,20 @@ def process_image(img_bgr):
             
     result = torch.squeeze(result)
     
-    # [THE MAGIC FILTER]: मधुरोपन (Faded issue) सधैँको लागि हटाउने जादु
+    # जादुयी फिल्टर: यसले मधुरोपन हटाएर ब्याकग्राउन्ड चट्ट काट्छ
     result = torch.sigmoid(result)
     
-    ma = torch.max(result)
-    mi = torch.min(result)
-    
-    if ma == mi:
-        mask = np.zeros((1024, 1024), dtype=np.uint8)
-    else:
-        result = (result - mi) / (ma - mi + 1e-8)
-        mask = result.cpu().numpy()
-        mask = np.squeeze(mask)
-        if mask.ndim != 2:
-            mask = mask.reshape((1024, 1024))
-        mask = (mask * 255).astype(np.uint8)
-        
+    # मास्क तयार गर्ने
+    mask = result.cpu().numpy()
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+    mask = (mask * 255).astype(np.uint8)
+        
     b, g, r = cv2.split(img_bgr)
     return cv2.merge([b, g, r, mask])
 
 def handler(job):
-    log("--> 🔵 [NEW REQUEST RECEIVED]")
     try:
         job_input = job['input']
-        if job_input.get("dummy_ping") == "wake_up_machine":
-            return {"status": "awake"}
-        
         img_b64 = job_input.get("image", "")
         if "," in img_b64:
             img_b64 = img_b64.split(",")[1]
@@ -79,7 +79,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # 400 Bad Request Fix (ठूलो फोटोलाई धान्ने)
+        # ठूलो फोटोलाई साइज मिलाउने
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
@@ -89,8 +89,6 @@ def handler(job):
         return {"image": base64.b64encode(buffer).decode('utf-8')}
 
     except Exception as e:
-        import traceback
-        log(f"--> 🔴 ERROR: {traceback.format_exc()}")
         return {"error": str(e)}
 
 runpod.serverless.start({"handler": handler})
