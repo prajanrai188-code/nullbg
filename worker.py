@@ -16,42 +16,45 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def log(msg):
     print(msg, flush=True)
 
-# --- 1. THE PERFECT LOADER (मधुरोपन हटाउने) ---
+# --- 1. MODEL LOADER ---
 def load_model():
     log("--> 🟢 Starting worker and loading model...")
     model = ISNetDIS()
-    
     if os.path.exists(MODEL_PATH):
         loaded_data = torch.load(MODEL_PATH, map_location=device)
-        if "state_dict" in loaded_data:
+        
+        # Safely extract state_dict
+        if isinstance(loaded_data, dict) and "state_dict" in loaded_data:
             state_dict = loaded_data["state_dict"]
-        elif "model" in loaded_data:
+        elif isinstance(loaded_data, dict) and "model" in loaded_data:
             state_dict = loaded_data["model"]
         else:
             state_dict = loaded_data
             
-        model_keys = model.state_dict()
-        new_state_dict = {}
-        
-        # १००% नसा जोड्ने ग्यारेन्टी
-        for k, v in state_dict.items():
-            clean_k = k.replace("net.", "").replace("module.", "")
-            if clean_k in model_keys:
-                new_state_dict[clean_k] = v
-            else:
-                new_state_dict[k] = v
-                
-        model.load_state_dict(new_state_dict, strict=False)
-        log("--> 🟢 Model fully loaded with ALL 2158 layers matching!")
+        try:
+            model.load_state_dict(state_dict, strict=True)
+            log("--> 🟢 Model loaded PERFECTLY (Strict Match)!")
+        except Exception:
+            log("--> 🟡 Strict load failed. Using generic mapper...")
+            model_keys = model.state_dict().keys()
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                clean_k = k.replace("net.", "").replace("module.", "")
+                if clean_k in model_keys:
+                    new_state_dict[clean_k] = v
+                else:
+                    new_state_dict[k] = v
+            model.load_state_dict(new_state_dict, strict=False)
+            log("--> 🟢 Model loaded via generic mapper!")
     else:
-        log("--> 🔴 ERROR: isnet.pth not found! Check Dockerfile.")
+        log("--> 🔴 ERROR: isnet.pth not found!")
         
     model.to(device).eval()
     return model
 
 model = load_model()
 
-# --- 2. IMAGE PROCESSING (तपाईंको ओरिजिनल म्याथ) ---
+# --- 2. IMAGE PROCESSING ---
 def process_image(img_bgr):
     log("--> 🟡 Running Image Processing...")
     h, w = img_bgr.shape[:2]
@@ -64,24 +67,22 @@ def process_image(img_bgr):
     img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
     with torch.no_grad():
-        result = model(img_tensor)
-        if isinstance(result, (list, tuple)):
-            result = result[0]
-            
-    # क्र्यासबाट बचाउने
-    result = torch.squeeze(result)
+        preds = model(img_tensor)
+        if isinstance(preds, (list, tuple)):
+            result = preds[0][0]
+        else:
+            result = preds[0]
+
+    # [THE MAGIC FIX]: यही Sigmoid ले गर्दा अब ब्याकग्राउन्ड चट्ट काटिन्छ र मधुरो हुँदैन!
+    result = torch.sigmoid(result)
     
-    ma = torch.max(result)
-    mi = torch.min(result)
-    
-    if ma == mi:
-        mask = np.zeros((h, w), dtype=np.uint8)
-    else:
-        result = (result - mi) / (ma - mi + 1e-8)
-        mask = result.cpu().numpy()
-        mask = np.squeeze(mask)
-        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-        mask = (mask * 255).astype(np.uint8)
+    mask = result.cpu().numpy()
+    mask = np.squeeze(mask)
+    if mask.ndim != 2:
+        mask = mask.reshape((1024, 1024))
+        
+    mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
+    mask = (mask * 255).astype(np.uint8)
     
     b, g, r = cv2.split(img_bgr)
     final_rgba = cv2.merge([b, g, r, mask])
@@ -112,8 +113,7 @@ def handler(job):
 
         processed_img = process_image(img)
 
-        # [THE CRITICAL 400 ERROR FIX]: 
-        # यदि फोटो धेरै ठूलो छ भने त्यसलाई RunPod ले धान्न सक्ने साइजमा झार्ने
+        # 400 Bad Request Fix
         ph, pw = processed_img.shape[:2]
         if max(ph, pw) > 1500:
             scale = 1500 / max(ph, pw)
@@ -128,9 +128,7 @@ def handler(job):
 
     except Exception as e:
         import traceback
-        error_msg = traceback.format_exc()
-        log(f"--> 🔴 ERROR: {error_msg}")
-        return {"error": str(e), "trace": error_msg}
+        log(f"--> 🔴 ERROR: {traceback.format_exc()}")
+        return {"error": str(e)}
 
-log("--> 🟢 Starting RunPod Serverless...")
 runpod.serverless.start({"handler": handler})
