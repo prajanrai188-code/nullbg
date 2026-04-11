@@ -10,45 +10,49 @@ from models.isnet import ISNetDIS
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def log(msg): print(f"--> {msg}", flush=True)
 
+# --- १. THE GREEDY SHAPE MATCHER (नाम र क्रम नचाहिने लजिक) ---
 def load_isnet_model():
     log("🟢 Initializing ISNetDIS Architecture...")
     model = ISNetDIS()
     
-    model_path = 'isnet.pth'
-    if os.path.exists(model_path):
-        log("🟡 Running Strict Layer Mapping...")
-        checkpoint = torch.load(model_path, map_location=device)
-        state_dict = checkpoint.get("state_dict", checkpoint)
+    if os.path.exists('isnet.pth'):
+        log("🟡 isnet.pth found. Running Greedy Shape Matcher...")
+        checkpoint = torch.load('isnet.pth', map_location=device)
+        state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
         
-        # अनावश्यक डाटाहरू हटाउने (num_batches_tracked)
-        f_dict = {k: v for k, v in state_dict.items() if "num_batches_tracked" not in k}
+        # 'num_batches_tracked' र अनावश्यक कुरा हटाउने
+        filtered_f_dict = {k: v for k, v in state_dict.items() if "num_batches_tracked" not in k}
         
         model_dict = model.state_dict()
-        m_keys = list(model_dict.keys())
-        f_keys = list(f_dict.keys())
-
         new_state_dict = {}
-        matched = 0
+        matched_count = 0
 
-        # [THE NUCLEAR FIX]: यदि नाम मिलेन भने क्रम (Index) र साइज (Shape) हेरेर जोड्ने
-        for i in range(min(len(m_keys), len(f_keys))):
-            mk = m_keys[i]
-            fk = f_keys[i]
+        # फाइलमा भएका सबै weight हरूलाई एउटा लिस्टमा राख्ने
+        available_weights = list(filtered_f_dict.values())
+
+        log(f"🟡 Model needs {len(model_dict)} tensors. File has {len(available_weights)} tensors.")
+
+        # एउटा एउटा गरी साइज म्याच गर्ने
+        for name, param in model_dict.items():
+            found = False
+            for i, f_weight in enumerate(available_weights):
+                if param.shape == f_weight.shape:
+                    new_state_dict[name] = f_weight
+                    available_weights.pop(i) # प्रयोग भइसकेको टुक्रा हटाउने
+                    matched_count += 1
+                    found = True
+                    break
             
-            # यदि साइज मिल्यो भने जबरजस्ती जोड्ने
-            if model_dict[mk].shape == f_dict[fk].shape:
-                new_state_dict[mk] = f_dict[fk]
-                matched += 1
-            else:
-                # यदि कतै साइज मिलेन भने पुरानै छोडिदिने
-                new_state_dict[mk] = model_dict[mk]
+            if not found:
+                new_state_dict[name] = param # नभेटिए पुरानै छोड्ने (यस्तो हुनु हुँदैन)
 
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"🟢 SUCCESS: Connected {matched} out of {len(model_dict)} layers!")
+        log(f"🟢 FINAL SUCCESS: Connected {matched_count} out of {len(model_dict)} layers!")
     return model.to(device).eval()
 
 isnet_model = load_isnet_model()
 
+# --- २. PROCESSING PIPELINE (SOLID OUTPUT FIX) ---
 def process_image(img_bgr):
     h, w = img_bgr.shape[:2]
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -61,14 +65,14 @@ def process_image(img_bgr):
         preds = isnet_model(img_tensor)
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
             
-    result = torch.squeeze(result).cpu().numpy()
+    # [THE PRO FIX]: Sigmoid + Normalization
+    mask = torch.sigmoid(result).squeeze().cpu().numpy()
     
-    # [NAN FIX]: NaN वा Inf भ्यालु आएमा त्यसलाई ० बनाउने
-    result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
-    
-    # Normalization (ChatGPT र मेरो लजिकको मिश्रण)
-    ma, mi = np.max(result), np.min(result)
-    mask = (result - mi) / (ma - mi + 1e-8)
+    # म्यास्कलाई कडा बनाउन Normalization:
+    # $$ Mask_{new} = \frac{Mask - min}{max - min} $$
+    ma, mi = np.max(mask), np.min(mask)
+    if ma > mi:
+        mask = (mask - mi) / (ma - mi)
     
     mask = (cv2.resize(mask, (w, h)) * 255).astype(np.uint8)
     
@@ -81,7 +85,7 @@ def handler(job):
         img = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
         res = process_image(img)
         
-        # Scaling
+        # Scaling for RunPod API
         if max(res.shape[:2]) > 1800:
             s = 1800 / max(res.shape[:2])
             res = cv2.resize(res, (int(res.shape[1]*s), int(res.shape[0]*s)), interpolation=cv2.INTER_AREA)
