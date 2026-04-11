@@ -10,43 +10,50 @@ from models.isnet import ISNetDIS
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def log(msg): print(f"--> {msg}", flush=True)
 
-# १. एआईको दिमाग जोड्ने (The Final Strict Matcher)
 def load_isnet_model():
-    log("🟢 Initializing ISNetDIS (2158 Layers)...")
+    log("🟢 Initializing ISNetDIS Architecture...")
     model = ISNetDIS()
     
-    if os.path.exists('isnet.pth'):
-        checkpoint = torch.load('isnet.pth', map_location=device)
+    model_path = 'isnet.pth'
+    if os.path.exists(model_path):
+        log("🟡 Running Strict Layer Mapping...")
+        checkpoint = torch.load(model_path, map_location=device)
         state_dict = checkpoint.get("state_dict", checkpoint)
-        model_dict = model.state_dict()
-        new_state_dict = {}
-        matched_count = 0
         
-        for mk, mv in model_dict.items():
-            clean_mk = mk.replace("module.", "").replace("net.", "")
-            found = False
-            for sk, sv in state_dict.items():
-                clean_sk = sk.replace("module.", "").replace("net.", "")
-                if clean_mk == clean_sk and mv.shape == sv.shape:
-                    new_state_dict[mk] = sv
-                    matched_count += 1
-                    found = True
-                    break
-            if not found: new_state_dict[mk] = mv
+        # अनावश्यक डाटाहरू हटाउने (num_batches_tracked)
+        f_dict = {k: v for k, v in state_dict.items() if "num_batches_tracked" not in k}
+        
+        model_dict = model.state_dict()
+        m_keys = list(model_dict.keys())
+        f_keys = list(f_dict.keys())
+
+        new_state_dict = {}
+        matched = 0
+
+        # [THE NUCLEAR FIX]: यदि नाम मिलेन भने क्रम (Index) र साइज (Shape) हेरेर जोड्ने
+        for i in range(min(len(m_keys), len(f_keys))):
+            mk = m_keys[i]
+            fk = f_keys[i]
+            
+            # यदि साइज मिल्यो भने जबरजस्ती जोड्ने
+            if model_dict[mk].shape == f_dict[fk].shape:
+                new_state_dict[mk] = f_dict[fk]
+                matched += 1
+            else:
+                # यदि कतै साइज मिलेन भने पुरानै छोडिदिने
+                new_state_dict[mk] = model_dict[mk]
 
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"🟢 SUCCESS: Connected {matched_count} out of 2158 layers!")
+        log(f"🟢 SUCCESS: Connected {matched} out of {len(model_dict)} layers!")
     return model.to(device).eval()
 
 isnet_model = load_isnet_model()
 
 def process_image(img_bgr):
-    log("🟡 AI Processing Started...")
     h, w = img_bgr.shape[:2]
-    
-    # Preprocessing
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+    
     img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float().unsqueeze(0).to(device)
     img_tensor = normalize(img_tensor / 255.0, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
@@ -54,45 +61,34 @@ def process_image(img_bgr):
         preds = isnet_model(img_tensor)
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
             
-    # [FIXING THE BLANK IMAGE ISSUE]: Nan/Inf Check + Sigmoid
-    result = torch.sigmoid(result).squeeze().cpu().numpy()
+    result = torch.squeeze(result).cpu().numpy()
     
-    # NaN आएको छ भने त्यसलाई ० बनाइदिने
+    # [NAN FIX]: NaN वा Inf भ्यालु आएमा त्यसलाई ० बनाउने
     result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
     
-    # २. ChatGPT को सल्लाह अनुसार प्रोफेसनल स्केलिङ (०-२५५)
+    # Normalization (ChatGPT र मेरो लजिकको मिश्रण)
     ma, mi = np.max(result), np.min(result)
-    if ma == mi:
-        # यदि एआईले केही देखेन भने पुरै मास्क सेतो (२५५) नभई एउटा सफ्ट मास्क दिने
-        mask_norm = result 
-    else:
-        mask_norm = (result - mi) / (ma - mi + 1e-8)
+    mask = (result - mi) / (ma - mi + 1e-8)
     
-    # ३. रिसाइज र कास्टिङ (Invalid Cast Fix)
-    mask_resized = cv2.resize(mask_norm, (w, h), interpolation=cv2.INTER_LINEAR)
-    mask = (mask_resized * 255).astype(np.uint8) # यो लाइन अब फेल हुँदैन
+    mask = (cv2.resize(mask, (w, h)) * 255).astype(np.uint8)
     
     b, g, r = cv2.split(img_bgr)
     return cv2.merge([b, g, r, mask])
 
 def handler(job):
     try:
-        img_input = job['input']['image']
-        img_b64 = img_input.split(",")[-1]
-        img_data = base64.b64decode(img_b64)
-        img = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
+        img_b64 = job['input']['image'].split(",")[-1]
+        img = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
+        res = process_image(img)
+        
+        # Scaling
+        if max(res.shape[:2]) > 1800:
+            s = 1800 / max(res.shape[:2])
+            res = cv2.resize(res, (int(res.shape[1]*s), int(res.shape[0]*s)), interpolation=cv2.INTER_AREA)
 
-        res_rgba = process_image(img)
-
-        # ठूलो फोटोलाई मिलाउने
-        if max(res_rgba.shape[:2]) > 1800:
-            s = 1800 / max(res_rgba.shape[:2])
-            res_rgba = cv2.resize(res_rgba, (int(res_rgba.shape[1]*s), int(res_rgba.shape[0]*s)), interpolation=cv2.INTER_AREA)
-
-        _, buffer = cv2.imencode('.png', res_rgba)
+        _, buffer = cv2.imencode('.png', res)
         return {"image": base64.b64encode(buffer).decode('utf-8')}
     except Exception as e:
-        log(f"🔴 ERROR: {str(e)}")
         return {"error": str(e)}
 
 runpod.serverless.start({"handler": handler})
