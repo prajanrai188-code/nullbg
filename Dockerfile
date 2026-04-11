@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # कोड र मोडल आर्किटेक्चर कपि गर्ने
 COPY . .
 
-# [CRITICAL]: २१५८ लेयर भएको सक्कली मोडल डाउनलोड गर्ने (Note: क्यापिटल -O प्रयोग गरिएको छ)
+# [CRITICAL FIX]: क्यापिटल -O प्रयोग गर्नुहोस् (शून्य -0 होइन)
 RUN wget -nv -O isnet.pth "https://huggingface.co/xuebinqin/DIS-IS-Net/resolve/main/isnet-general-use.pth"
 
 CMD ["python", "-u", "worker.py"]
