@@ -8,29 +8,30 @@ from PIL import Image
 from io import BytesIO
 from torchvision.transforms.functional import normalize
 
-# ISNet Model Architecture (तपाईंको models/isnet.py बाट)
+# ISNet Model Architecture (तपाईंको repo को models/isnet.py बाट)
 from models.isnet import ISNetDIS
 
-# --- १. CONFIGURATION ---
+# --- १. CONFIGURATION & DEVICE SETUP ---
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-def log(msg): print(msg, flush=True)
+def log(msg): print(f"--> {msg}", flush=True)
 
-# --- २. THE ULTIMATE ISNET LOADER (२१५८ लेयर म्याच गर्ने ग्यारेन्टी) ---
-def load_isnet():
-    log("--> 🟢 Loading ISNetDIS Architecture...")
+# --- २. THE ULTIMATE ISNET LOADER (२१५८ लेयर म्याच गर्ने फिक्स) ---
+def load_isnet_model():
+    log("🟢 Initializing ISNetDIS Architecture...")
     model = ISNetDIS()
     
     model_path = 'isnet.pth'
     if os.path.exists(model_path):
-        # मोडल लोड गर्दा सुरक्षित तरिका अपनाउने
+        log("🟡 isnet.pth found. Mapping brain layers...")
         checkpoint = torch.load(model_path, map_location=device)
-        state_dict = checkpoint.get("state_dict", checkpoint)
         
+        # फाइलबाट state_dict निकाल्ने
+        state_dict = checkpoint.get("state_dict", checkpoint)
         model_dict = model.state_dict()
         new_state_dict = {}
         matched_count = 0
         
-        # नसाका नामहरूमा 'net.' वा 'module.' भए पनि त्यसलाई हटाएर जोड्ने
+        # नसाका नामहरू मिलाउने (Prefix Cleaning Logic)
         for k, v in state_dict.items():
             clean_k = k.replace("module.", "").replace("net.", "")
             if clean_k in model_dict:
@@ -38,69 +39,70 @@ def load_isnet():
                 matched_count += 1
         
         model.load_state_dict(new_state_dict, strict=False)
-        log(f"--> 🟢 SUCCESS: Connected {matched_count} out of {len(model_dict)} layers!")
+        log(f"🟢 SUCCESS: Connected {matched_count} out of {len(model_dict)} layers!")
     else:
-        log("--> 🔴 ERROR: isnet.pth missing! Check Dockerfile download.")
+        log("🔴 ERROR: isnet.pth missing! Check your Dockerfile wget command.")
         
     model.to(device).eval()
     return model
 
-# ग्लोबल मोडल अब्जेक्ट
-log("--> 🟢 Initializing AI System...")
-isnet_model = load_isnet()
+# ग्लोबल मोडल लोड
+isnet_model = load_isnet_model()
 
-# --- ३. IMAGE PROCESSING PIPELINE ---
+# --- ३. FUTURE PLACEHOLDER: STABLE DIFFUSION ---
+# यहाँ तपाइँ पछि SD को लजिक थप्न सक्नुहुन्छ
+class BackgroundGenerator:
+    def __init__(self):
+        self.active = False # अहिलेलाई अफ
+
+# --- ४. CORE IMAGE PROCESSING PIPELINE ---
 def process_background_removal(img_bgr):
-    log("--> 🟡 Running ISNet AI Inference...")
+    log("🟡 Running Professional AI Inference...")
     h, w = img_bgr.shape[:2]
     
-    # Preprocessing (ChatGPT को सल्लाह अनुसार १०२४ साइजमा)
+    # Preprocessing: ChatGPT को सल्लाह अनुसार १०२४ साइजमा रिसाइज
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     img_resized = cv2.resize(img_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
     
+    # टेन्सरमा बदल्ने र Normalize गर्ने
     img_tensor = torch.from_numpy(img_resized).permute(2, 0, 1).float().unsqueeze(0).to(device)
-    img_tensor = img_tensor / 255.0
-    img_tensor = normalize(img_tensor, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
+    img_tensor = normalize(img_tensor / 255.0, [0.5, 0.5, 0.5], [1.0, 1.0, 1.0])
 
-    # Inference (AI ले मास्क बनाउने काम)
+    # एआई अनुमान (Inference)
     with torch.no_grad():
         preds = isnet_model(img_tensor)
-        # ISNet ले धेरै आउटपुट दिन सक्छ, पहिलो लिस्टको पहिलो मास्क लिने
+        # पहिलो आउटपुट नै मुख्य मास्क हो
         result = preds[0][0] if isinstance(preds, (list, tuple)) else preds[0]
             
-    # Post-processing (Sigmoid ले मधुरोपन हटाउँछ)
+    # Post-processing: Sigmoid ले 'Faded' समस्या हटाउँछ
     result = torch.squeeze(result)
     mask = torch.sigmoid(result).cpu().numpy()
     
     # मास्कलाई ओरिजिनल फोटोको साइजमा फर्काउने
     mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_LINEAR)
-    mask = (mask * 255).astype(np.uint8)
+    mask_uint8 = (mask * 255).astype(np.uint8)
     
-    # Alpha Channel Merge (पारदर्शी फोटो बनाउने)
+    # पारदर्शी फोटो बनाउन मर्ज गर्ने (Alpha Channel)
     b, g, r = cv2.split(img_bgr)
-    rgba = cv2.merge([b, g, r, mask])
+    rgba = cv2.merge([b, g, r, mask_uint8])
     return rgba
 
-# --- ४. RUNPOD HANDLER ---
+# --- ५. RUNPOD SERVERLESS HANDLER ---
 def handler(job):
-    log("\n==================================")
-    log("--> 🔵 [REQUEST RECEIVED]")
+    log("🔵 [NEW REQUEST RECEIVED]")
     try:
         job_input = job['input']
         
-        # 'Wake up' कलको लागि (Warm machine)
+        # Warm machine राख्नको लागि
         if job_input.get("dummy_ping"): 
             return {"status": "awake"}
         
-        # Base64 इमेज ह्यान्डल गर्ने
-        img_b64 = job_input.get("image", "")
-        if "," in img_b64: 
-            img_b64 = img_b64.split(",")[1]
-
+        # Base64 डाटा निकाल्ने
+        img_b64 = job_input.get("image", "").split(",")[-1]
         if not img_b64:
             return {"error": "No image data provided"}
 
-        # Decoding
+        # Decoding Base64 to OpenCV
         img_data = base64.b64decode(img_b64)
         nparr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -108,31 +110,31 @@ def handler(job):
         if img is None:
             return {"error": "Invalid image format"}
 
-        # AI पाइपलाइन रन गर्ने
+        # एआई पाइपलाइन चलाउने
         processed_rgba = process_background_removal(img)
 
-        # ठूलो फोटोलाई मिलाउने (RunPod 400 Bad Request Fix)
-        # १८०० भन्दा माथि भएमा मात्र रिसाइज गर्ने
+        # [PRO FIX]: API लिमिट भन्दा माथि जान नदिन ठूला फोटोलाई रिसाइज गर्ने
+        # यसले RunPod को '400 Bad Request' एरर हटाउँछ
         ph, pw = processed_rgba.shape[:2]
         if max(ph, pw) > 1800:
-            log("--> 🟡 Scaling down result for API limits...")
+            log(f"🟡 Scaling down result ({pw}x{ph}) for API limits...")
             scale = 1800 / max(ph, pw)
             processed_rgba = cv2.resize(processed_rgba, (int(pw * scale), int(ph * scale)), interpolation=cv2.INTER_AREA)
 
-        # Encoding to PNG
-        log("--> 🔵 Encoding result to Base64 PNG...")
+        # Encoding to PNG (Transparent)
+        log("🔵 Encoding result to Base64 PNG...")
         _, buffer = cv2.imencode('.png', processed_rgba)
         result_b64 = base64.b64encode(buffer).decode('utf-8')
 
-        log("--> 🟢 Request successfully finished!")
+        log("🟢 Request successful!")
         return {"image": result_b64}
 
     except Exception as e:
         import traceback
         error_msg = traceback.format_exc()
-        log(f"--> 🔴 ERROR: {error_msg}")
+        log(f"🔴 CRITICAL ERROR: {error_msg}")
         return {"error": str(e), "trace": error_msg}
 
-# --- ५. START SERVERLESS WORKER ---
-log("--> 🟢 RunPod Serverless Starting...")
+# --- ६. START RUNPOD SERVERLESS ---
+log("🟢 NullBG.com Pro Worker Starting...")
 runpod.serverless.start({"handler": handler})
