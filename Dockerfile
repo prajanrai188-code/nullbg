@@ -1,13 +1,12 @@
-# RTX 4090 र Stable Diffusion को लागि उत्तम Base Image
+# RTX 4090 को लागि उत्तम Base Image
 FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+
+# प्रश्न सोध्ने झन्झट हटाउन (Essential Fix)
+ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# [CRITICAL FIX]: 'Geographic area' सोध्न नदिने कमान्ड
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Kathmandu
-
-# सिस्टम अपडेट र आवश्यक लाइब्रेरीहरू
+# सिस्टम अपडेट र डिपेंडेन्सी (tzdata लाई अटो-कन्फिगर गर्ने)
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
@@ -16,11 +15,11 @@ RUN apt-get update && apt-get install -y \
     tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# पाइपलाइनको लागि आवश्यक लाइब्रेरीहरू
+# पहिले requirements इन्स्टल गर्ने
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# सबै कोड कपि गर्ने
+# कोड कपि गर्ने
 COPY . .
 
 # ISNet को सही मोडल डाउनलोड गर्ने
