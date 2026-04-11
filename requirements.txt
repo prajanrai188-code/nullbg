@@ -1,13 +1,8 @@
 runpod
-torch
-torchvision
-torchaudio
-# ISNet र Image Processing को लागि
 opencv-python
 numpy<2.0.0
 pillow
 scikit-image
-# भविष्यको Stable Diffusion को लागि (SD फाउन्डेसन)
 diffusers
 transformers
 accelerate
