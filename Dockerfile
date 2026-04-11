@@ -1,13 +1,23 @@
-FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-runtime
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y libgl1-mesa-glx libglib2.0-0 wget && rm -rf /var/lib/apt/lists/*
+# सिस्टम डिपेंडेन्सीहरू
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    wget \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# पाइथन लाइब्रेरीहरू
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt runpod "numpy<2.0.0"
+RUN pip install --no-cache-dir -r requirements.txt
+
+# कोड कपि गर्ने
 COPY . .
 
-# [THE GOLDEN MODEL]: अप्रिल ८ मा २१५८ वटै नसा जोडेको यही मोडलले हो
+# [CRITICAL]: ISNet को सही मोडल डाउनलोड गर्ने (यही मोडलले २१५८ लेयर म्याच गर्छ)
 RUN wget -qO isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
 
 CMD ["python", "-u", "worker.py"]
