@@ -1,25 +1,29 @@
-# RTX 4090 को लागि उत्तम Base Image
+# RTX 4090 र Stable Diffusion को लागि उत्तम Base Image
 FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 WORKDIR /app
 
-# सिस्टम अपडेट र डिपेंडेन्सी
+# [CRITICAL FIX]: 'Geographic area' सोध्न नदिने कमान्ड
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Kathmandu
+
+# सिस्टम अपडेट र आवश्यक लाइब्रेरीहरू
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
     wget \
     git \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-# पहिले requirements इन्स्टल गर्ने (यसो गर्दा बिल्ड छिटो हुन्छ)
+# पाइपलाइनको लागि आवश्यक लाइब्रेरीहरू
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# कोड कपि गर्ने
+# सबै कोड कपि गर्ने
 COPY . .
 
-# [CRITICAL]: ISNet को सही मोडल डाउनलोड गर्ने
-# wget मा -nv (non-verbose) प्रयोग गर्दा लग्स धेरै भरिँदैन र बिल्ड छिटो हुन्छ
+# ISNet को सही मोडल डाउनलोड गर्ने
 RUN wget -nv -O isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
 
 CMD ["python", "-u", "worker.py"]
