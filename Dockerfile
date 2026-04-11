@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# [CRITICAL]: २१५८ लेयर भएको सक्कली मोडल डाउनलोड गर्ने
-RUN wget -nv -O isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
+
+RUN wget -nv -O isnet.pth "https://huggingface.co/xuebinqin/DIS-IS-Net/resolve/main/isnet-general-use.pth"
 
 CMD ["python", "-u", "worker.py"]
