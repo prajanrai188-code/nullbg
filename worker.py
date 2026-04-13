@@ -4,57 +4,57 @@ import torch
 import runpod
 import base64
 import numpy as np
+import traceback
 from models.isnet import ISNetDIS
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def log(msg): print(f"--> {msg}", flush=True)
 
+# १. स्मार्ट लोडर: नाम र साइज मिलाएर २१५८ लेयर जोड्ने
 def load_isnet_model():
-    log("🟢 Initializing ISNetDIS (Safe Name Matcher)...")
-    model = ISNetDIS()
-    
-    if os.path.exists('isnet.pth'):
-        checkpoint = torch.load('isnet.pth', map_location=device)
-        state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
-        
-        # [THE FIX]: नाम मिलाएर सही ठाउँमा नसा जोड्ने (No Scrambling)
-        model_dict = model.state_dict()
-        new_state_dict = {}
-        for mk in model_dict.keys():
-            # 'module.' वा 'net.' जस्ता ट्यागहरू सफा गर्ने
-            clean_mk = mk.replace("module.", "").replace("net.", "")
-            found = False
-            for fk in state_dict.keys():
-                clean_fk = fk.replace("module.", "").replace("net.", "")
-                if clean_mk == clean_fk:
-                    new_state_dict[mk] = state_dict[fk]
-                    found = True
-                    break
-            if not found: new_state_dict[mk] = model_dict[mk]
+    try:
+        log("🟢 Initializing ISNetDIS Architecture...")
+        model = ISNetDIS()
+        if os.path.exists('isnet.pth'):
+            checkpoint = torch.load('isnet.pth', map_location=device)
+            state_dict = checkpoint.get("state_dict", checkpoint.get("model", checkpoint))
+            
+            f_dict = {k.replace("module.", "").replace("net.", ""): v for k, v in state_dict.items()}
+            model_dict = model.state_dict()
+            new_state_dict = {}
+            matched = 0
 
-        model.load_state_dict(new_state_dict, strict=False)
-        log(f"🟢 SUCCESS: Precision Matched layers successfully!")
-    return model.to(device).eval()
+            for mk in model_dict.keys():
+                clean_mk = mk.replace("module.", "").replace("net.", "")
+                if clean_mk in f_dict:
+                    new_state_dict[mk] = f_dict[clean_mk]
+                    matched += 1
+                else:
+                    new_state_dict[mk] = model_dict[mk]
+
+            model.load_state_dict(new_state_dict, strict=False)
+            log(f"🟢 SUCCESS: Connected {matched} out of 2158 layers!")
+        return model.to(device).eval()
+    except Exception as e:
+        log(f"🔴 ERROR LOADING MODEL: {str(e)}")
+        raise e
 
 isnet_model = load_isnet_model()
 
 def process_image(img_bgr):
     h, w = img_bgr.shape[:2]
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    img_resized = cv2.resize(img_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+    img_resized = cv2.resize(img_rgb, (1024, 1024))
     
     img_tensor = (torch.from_numpy(img_resized).permute(2, 0, 1).float() / 255.0) - 0.5
     img_tensor = img_tensor.unsqueeze(0).to(device)
 
     with torch.no_grad():
         preds = isnet_model(img_tensor)
-        # isnet.py को आउटपुट [sigmoid(d1)] लिस्टमा हुन्छ
+        # isnet.py को आउटपुट
         result = preds[0][0]
             
     mask = result.squeeze().cpu().numpy()
-    mask = np.nan_to_num(mask, nan=0.0)
-    
-    # [SOLID FIX]: मधुरो भागलाई गाढा बनाउने
     ma, mi = np.max(mask), np.min(mask)
     if ma > mi: mask = (mask - mi) / (ma - mi)
     
@@ -63,8 +63,10 @@ def process_image(img_bgr):
 
 def handler(job):
     try:
+        log("🔵 New Request Received")
         img_b64 = job['input']['image'].split(",")[-1]
         img = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
+        
         res = process_image(img)
         
         if max(res.shape[:2]) > 1800:
@@ -72,8 +74,10 @@ def handler(job):
             res = cv2.resize(res, (int(res.shape[1]*s), int(res.shape[0]*s)), interpolation=cv2.INTER_AREA)
 
         _, buffer = cv2.imencode('.png', res)
+        log("🟢 Processing Complete")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
     except Exception as e:
+        log(f"🔴 HANDLER ERROR: {traceback.format_exc()}")
         return {"error": str(e)}
 
 runpod.serverless.start({"handler": handler})
