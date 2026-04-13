@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # सबै फाइलहरू कपि गर्ने
 COPY . .
 
-# [100% VERIFIED LINK]: यो लिङ्कले २१५८ लेयर भएको सक्कली मोडल दिन्छ
+# [FINAL FIXED LINK]: यो लाइनलाई लाइन रिप्लेस गर्नुहोस्
 RUN wget -nv -O isnet.pth "https://huggingface.co/NimaBoscarino/IS-Net_DIS-general-use/resolve/main/isnet-general-use.pth"
 
 CMD ["python", "-u", "worker.py"]
