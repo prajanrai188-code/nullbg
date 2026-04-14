@@ -1,11 +1,4 @@
 runpod
-opencv-python
+rembg[gpu]
+opencv-python-headless
 numpy<2.0.0
-pillow
-scikit-image
-torchvision
-# अहिलेको लागि यी तलका ३ वटालाई हटाउनुहोस् वा अगाडि # राख्नुहोस्
-# diffusers
-# transformers
-# accelerate
-safetensors
