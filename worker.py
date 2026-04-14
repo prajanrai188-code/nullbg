@@ -7,10 +7,10 @@ import traceback
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🟢 मोडल लोड गर्ने
-log("🟢 Initializing NullBG Pro Engine (Rembg ONNX)...")
-session = new_session("isnet-general-use")
-log("🟢 SUCCESS: Engine Ready 100%!")
+# 🚀 [THE ULTIMATE ENGINE]: संसारकै शक्तिशाली मोडल (BiRefNet)
+log("🟢 Initializing SOTA Engine (BiRefNet-General)...")
+session = new_session("birefnet-general")
+log("🟢 SUCCESS: BiRefNet Engine Ready 100%!")
 
 def handler(job):
     try:
@@ -23,20 +23,19 @@ def handler(job):
         if img is None:
             return {"error": "Invalid image format"}
 
-        # 🟡 [THE HAIR & WIRE FIX]: Alpha Matting Engine ON
-        log("🟡 Running Alpha Matting (Hair & Wire Detector)...")
+        # 🟡 [THE PERFECT EDGE FIX]: तार र कपाल जोगाउने सेटिङ
+        log("🟡 Running High-Precision Matting...")
         res_rgba = remove(
             img, 
             session=session, 
-            
-            # यी ४ वटा जादुगरी लाइनले कपाल र तारलाई सुरक्षित राख्छन्:
+            post_process_mask=True,
             alpha_matting=True,
             alpha_matting_foreground_threshold=240,
             alpha_matting_background_threshold=10,
-            alpha_matting_erode_size=10
+            alpha_matting_erode_size=2  # <-- यसले साइकलको तार (Spokes) काटिन दिँदैन
         )
         
-        # 🟠 साइज ठूलो भएमा खुम्च्याउने
+        # 🟠 १८०० पिक्सेलमा खुम्च्याउने
         if max(res_rgba.shape[:2]) > 1800:
             s = 1800 / max(res_rgba.shape[:2])
             res_rgba = cv2.resize(res_rgba, (int(res_rgba.shape[1]*s), int(res_rgba.shape[0]*s)), interpolation=cv2.INTER_AREA)
