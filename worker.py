@@ -7,69 +7,83 @@ from ultralytics import YOLO
 import traceback
 import os
 
+# १. इन्जिनहरूको ठेगाना सेट गर्ने
 os.environ["U2NET_HOME"] = "/root/.u2net"
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🚀 इन्जिनहरू लोड गर्ने
-log("🟢 Loading Intelligence Models...")
+# २. मोडेलहरू लोड गर्ने (सर्भर स्टार्ट हुँदा एकैपटक)
+log("🟢 Loading Intelligence & Quality Engines...")
 session = new_session("birefnet-general")
-detector = YOLO('yolov8n.pt') # एकदमै सानो र छिटो चिन्न सक्ने मोडल
-log("🟢 Systems Ready!")
+detector = YOLO('yolov8n.pt') 
+log("🟢 SUCCESS: Systems Ready!")
 
-# यी वस्तुहरू भेटिएमा 'Deep Refinement' चलाउने
+# यी वस्तुहरू भेटिएमा मात्र 'Deep Refinement' चलाउने
 DETAILED_CLASSES = ['person', 'bicycle', 'dog', 'cat', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'bird']
+
+def fast_guided_filter(image, mask, r=40, eps=1e-6):
+    """
+    यो 'Magic Formula' ले एआईको मास्कलाई 
+    ओरिजिनल फोटोको डिटेलसँग मिसाएर रौँ र किनारालाई रिफाइन गर्छ।
+    """
+    mask_f = mask.astype(np.float32) / 255.0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    
+    mean_I = cv2.boxFilter(gray, -1, (r, r))
+    mean_p = cv2.boxFilter(mask_f, -1, (r, r))
+    mean_Ip = cv2.boxFilter(gray * mask_f, -1, (r, r))
+    cov_Ip = mean_Ip - mean_I * mean_p
+    
+    mean_II = cv2.boxFilter(gray * gray, -1, (r, r))
+    var_I = mean_II - mean_I * mean_I
+    
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+    
+    mean_a = cv2.boxFilter(a, -1, (r, r))
+    mean_b = cv2.boxFilter(b, -1, (r, r))
+    
+    q = mean_a * gray + mean_b
+    return (np.clip(q, 0, 1) * 255).astype(np.uint8)
 
 def handler(job):
     try:
         log("🔵 Processing New Request...")
         img_b64 = job['input']['image'].split(",")[-1]
         img_data = base64.b64decode(img_b64)
-        nparr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        img = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
         
-        if img is None: return {"error": "Invalid image format"}
+        if img is None: return {"error": "Invalid format"}
 
-        # १. के छ त फोटोमा? (Detection)
+        # ३. के छ त फोटोमा? (Object Detection)
         results = detector(img, verbose=False)
-        found_detailed = False
-        
+        is_detailed = False
         for r in results:
             for c in r.boxes.cls:
-                class_name = detector.names[int(c)]
-                if class_name in DETAILED_CLASSES:
-                    found_detailed = True
-                    log(f"🎯 Detected: {class_name} (Applying High Refinement)")
+                if detector.names[int(c)] in DETAILED_CLASSES:
+                    is_detailed = True
                     break
 
-        # २. कन्डिसनल प्रोसेसिङ
-        if found_detailed:
-            # कपाल, भुत्ला र तारको लागि प्रो सेटिङ
-            res_rgba = remove(
-                img, 
-                session=session, 
-                alpha_matting=True,
-                alpha_matting_foreground_threshold=240,
-                alpha_matting_background_threshold=10,
-                alpha_matting_erode_size=2,
-                post_process_mask=True
-            )
+        # ४. कन्डिसनल क्वालिटी प्रोसेसिङ
+        if is_detailed:
+            log("🎯 Detailed Subject Detected: Applying Hybrid Matting")
+            # पहिले एआईले मास्क निकाल्छ
+            res_rgba = remove(img, session=session, only_mask=False)
+            b, g, r, alpha = cv2.split(res_rgba)
+            
+            # त्यसलाई 'Guided Filter' ले रिफाइन गर्छ (कपाल र रौंको लागि)
+            refined_alpha = fast_guided_filter(img, alpha)
+            final_rgba = cv2.merge([cv2.split(img)[0], cv2.split(img)[1], cv2.split(img)[2], refined_alpha])
         else:
-            # अन्य 'Solid' वस्तुको लागि क्लिन सेटिङ
-            log("📦 Detected: Solid Object (Applying Regular Clean Cut)")
-            res_rgba = remove(
-                img, 
-                session=session, 
-                post_process_mask=True,
-                alpha_matting=False # यसले ठोस वस्तुको किनारा कडा र सफा राख्छ
-            )
-        
-        # ३. १८०० पिक्सेल म्यानेजमेन्ट
-        if max(res_rgba.shape[:2]) > 1800:
-            s = 1800 / max(res_rgba.shape[:2])
-            res_rgba = cv2.resize(res_rgba, (int(res_rgba.shape[1]*s), int(res_rgba.shape[0]*s)), interpolation=cv2.INTER_AREA)
+            log("📦 Solid Object Detected: Applying Regular Clean Cut")
+            final_rgba = remove(img, session=session, post_process_mask=True)
 
-        _, buffer = cv2.imencode('.png', res_rgba)
+        # ५. १८०० पिक्सेल म्यानेजमेन्ट
+        if max(final_rgba.shape[:2]) > 1800:
+            s = 1800 / max(final_rgba.shape[:2])
+            final_rgba = cv2.resize(final_rgba, (int(img.shape[1]*s), int(img.shape[0]*s)), interpolation=cv2.INTER_AREA)
+
+        _, buffer = cv2.imencode('.png', final_rgba)
         log("🟢 Done!")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
         
