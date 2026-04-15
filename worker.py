@@ -1,77 +1,80 @@
-import os
 import cv2
-import torch
 import runpod
 import base64
 import numpy as np
-import traceback
 from rembg import remove, new_session
+from ultralytics import YOLO
+import traceback
+import os
 
-# १. वातावरण सेटिङ (मोडल खोज्ने सही ठेगाना)
 os.environ["U2NET_HOME"] = "/root/.u2net"
 
-def log(msg): 
-    print(f"--> {msg}", flush=True)
+def log(msg): print(f"--> {msg}", flush=True)
 
-# २. संसारकै शक्तिशाली BiRefNet इन्जिन सुरुमै लोड गर्ने
-log("🟢 Initializing SOTA Engine (BiRefNet-General)...")
-try:
-    # यसले बिल्डको बेला डाउनलोड भएको BiRefNet मोडल प्रयोग गर्छ
-    session = new_session("birefnet-general")
-    log("🟢 SUCCESS: BiRefNet Engine Ready 100%!")
-except Exception as e:
-    log(f"🔴 ERROR STARTING ENGINE: {str(e)}")
-    raise e
+# 🚀 इन्जिनहरू लोड गर्ने
+log("🟢 Loading Intelligence Models...")
+session = new_session("birefnet-general")
+detector = YOLO('yolov8n.pt') # एकदमै सानो र छिटो चिन्न सक्ने मोडल
+log("🟢 Systems Ready!")
 
-def process_image(img):
-    """
-    यो फङ्सनले फोटोको ब्याकग्राउन्ड हटाउँछ र किनाराहरू सफा गर्छ।
-    """
-    log("🟡 Running High-Precision Matting...")
-    
-    # [THE PRO SETTINGS]: remove.bg लेभलको नतिजाका लागि
-    res_rgba = remove(
-        img, 
-        session=session, 
-        post_process_mask=True, # मास्कलाई चिल्लो बनाउने
-        alpha_matting=True,     # कपाल र मसिनो तार चिन्नका लागि
-        alpha_matting_foreground_threshold=240,
-        alpha_matting_background_threshold=10,
-        alpha_matting_erode_size=2 # यसलाई सानो राख्दा साइकलको तार काटिँदैन
-    )
-    return res_rgba
+# यी वस्तुहरू भेटिएमा 'Deep Refinement' चलाउने
+DETAILED_CLASSES = ['person', 'bicycle', 'dog', 'cat', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'bird']
 
 def handler(job):
     try:
-        log("🔵 New Request Received")
-        
-        # Base64 बाट फोटो निकाल्ने
+        log("🔵 Processing New Request...")
         img_b64 = job['input']['image'].split(",")[-1]
         img_data = base64.b64decode(img_b64)
         nparr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
-        if img is None:
-            return {"error": "Invalid image format"}
+        if img is None: return {"error": "Invalid image format"}
 
-        # एआई प्रोसेसिङ
-        res_rgba = process_image(img)
+        # १. के छ त फोटोमा? (Detection)
+        results = detector(img, verbose=False)
+        found_detailed = False
         
-        # ३. RunPod API को लिमिट (१८०० पिक्सेल) म्यानेज गर्ने
-        h, w = res_rgba.shape[:2]
-        if max(h, w) > 1800:
-            log(f"🟠 Scaling down from {w}x{h} for API safety")
-            scale = 1800 / max(h, w)
-            res_rgba = cv2.resize(res_rgba, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        for r in results:
+            for c in r.boxes.cls:
+                class_name = detector.names[int(c)]
+                if class_name in DETAILED_CLASSES:
+                    found_detailed = True
+                    log(f"🎯 Detected: {class_name} (Applying High Refinement)")
+                    break
 
-        # नतिजालाई फेरि Base64 मा बदल्ने
+        # २. कन्डिसनल प्रोसेसिङ
+        if found_detailed:
+            # कपाल, भुत्ला र तारको लागि प्रो सेटिङ
+            res_rgba = remove(
+                img, 
+                session=session, 
+                alpha_matting=True,
+                alpha_matting_foreground_threshold=240,
+                alpha_matting_background_threshold=10,
+                alpha_matting_erode_size=2,
+                post_process_mask=True
+            )
+        else:
+            # अन्य 'Solid' वस्तुको लागि क्लिन सेटिङ
+            log("📦 Detected: Solid Object (Applying Regular Clean Cut)")
+            res_rgba = remove(
+                img, 
+                session=session, 
+                post_process_mask=True,
+                alpha_matting=False # यसले ठोस वस्तुको किनारा कडा र सफा राख्छ
+            )
+        
+        # ३. १८०० पिक्सेल म्यानेजमेन्ट
+        if max(res_rgba.shape[:2]) > 1800:
+            s = 1800 / max(res_rgba.shape[:2])
+            res_rgba = cv2.resize(res_rgba, (int(res_rgba.shape[1]*s), int(res_rgba.shape[0]*s)), interpolation=cv2.INTER_AREA)
+
         _, buffer = cv2.imencode('.png', res_rgba)
-        log("🟢 Done! Sending High-Quality Result.")
+        log("🟢 Done!")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
         
     except Exception as e:
-        log(f"🔴 HANDLER ERROR: {traceback.format_exc()}")
+        log(f"🔴 ERROR: {traceback.format_exc()}")
         return {"error": str(e)}
 
-# RunPod सर्भर सुरु गर्ने
 runpod.serverless.start({"handler": handler})
