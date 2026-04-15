@@ -11,24 +11,19 @@ os.environ["U2NET_HOME"] = "/root/.u2net"
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🟢 एआई इन्जिनहरू
-log("🟢 Initializing Pro Quality Engine...")
+# 🟢 एआई इन्जिनहरू (Master Quality Models)
+log("🟢 Loading Master Intelligence & Quality Engines...")
 session = new_session("birefnet-general")
 detector = YOLO('yolov8n.pt') 
 
+# यी वस्तुहरू भेटिएमा मात्र 'Alpha Matting Refinement' चलाउने
 DETAILED_CLASSES = ['person', 'dog', 'cat', 'bicycle']
 
-def professional_refinement(image, mask):
+def fast_guided_filter(image, mask, r=10, eps=0.001):
     """
-    यो फङ्सनले कपालको छेउको रङ्ग सफा गर्छ (Color Decontamination)
-    र किनारालाई एकदमै प्रस्ट बनाउँछ।
+    यो 'Magic Formula' ले मास्कलाई चिल्लो र प्राकृतिक बनाउँछ (Alpha Matting)।
     """
-    image_f = image.astype(np.float32) / 255.0
     mask_f = mask.astype(np.float32) / 255.0
-    
-    # १. Guided Filter (Adjusted for Higher Sharpness)
-    # r=5 र eps=1e-4 ले मसिनो रौंलाई झन् प्रस्ट बनाउँछ
-    r, eps = 5, 0.0001
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
     
     mean_I = cv2.boxFilter(gray, -1, (r, r))
@@ -36,28 +31,35 @@ def professional_refinement(image, mask):
     mean_Ip = cv2.boxFilter(gray * mask_f, -1, (r, r))
     cov_Ip = mean_Ip - mean_I * mean_p
     
-    var_I = cv2.boxFilter(gray * gray, -1, (r, r)) - mean_I * mean_I
+    mean_II = cv2.boxFilter(gray * gray, -1, (r, r))
+    var_I = mean_II - mean_I * mean_I
+    
     a = cov_Ip / (var_I + eps)
     b = mean_p - a * mean_I
     
-    refined_mask = cv2.boxFilter(a, -1, (r, r)) * gray + cv2.boxFilter(b, -1, (r, r))
-    refined_mask = np.clip(refined_mask, 0, 1)
-
-    # २. [THE COLOR FIX]: Color Decontamination
-    # यसले किनारामा टाँसिएको पुरानो ब्याकग्राउन्डको रङ्गलाई हटाउँछ।
-    # कडा भाग (Foreground) बाट रङ्ग तानेर छेउमा भर्छ।
-    kernel = np.ones((5,5), np.uint8)
-    fg_mask = cv2.erode((refined_mask * 255).astype(np.uint8), kernel, iterations=2)
-    fg_mask = fg_mask.astype(np.float32) / 255.0
-    
-    # सादा रङ्ग भएका ठाउँहरू सफा गर्ने
-    refined_mask = np.power(refined_mask, 1.1) # Mask Contrast बढाउने
-    
+    q = cv2.boxFilter(a, -1, (r, r)) * gray + cv2.boxFilter(b, -1, (r, r))
+    refined_mask = np.clip(q, 0, 1)
     return (refined_mask * 255).astype(np.uint8)
+
+def color_decontaminate(image, mask):
+    """
+    [THE PRODUCTION FIX]: किनारामा टाँसिएको पुरानो ब्याकग्राउन्डको रङ्ग (Color Bleed) सफा गर्छ।
+    यसले फोटोलाई 'remove.bg' कै लेभलमा पुर्याउँछ।
+    """
+    h, w = mask.shape
+    
+    # ट्रांजिशन जोन पत्ता लगाउने (जहां मास्क न सेतो छ न कालो)
+    # यी पिक्सेलहरू ब्याकग्राउन्डको रङ्गले प्रदूषित भएका हुन्छन्।
+    unknown_mask = ((mask > 1) & (mask < 254)).astype(np.uint8) * 255
+    
+    # 'Navier-Stokes' इनपेन्टिङ मेथड प्रयोग गरेर रङ्ग सफा गर्ने (Faster & Reliable)
+    log("✨ Decontaminating colors...")
+    cleaned_image = cv2.inpaint(image, unknown_mask, 3, cv2.INPAINT_TELEA)
+    return cleaned_image
 
 def handler(job):
     try:
-        log("🔵 Processing High-Res Request...")
+        log("🔵 New Request Processing...")
         img_b64 = job['input']['image'].split(",")[-1]
         img_data = base64.b64decode(img_b64)
         img = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
@@ -73,26 +75,40 @@ def handler(job):
                     is_detailed = True
                     break
 
-        # ४. कन्डिसनल क्वालिटी प्रोसेसिङ
+        # ४. कन्डिसनल क्वालिटी प्रोसेसिङ (YOLO)
         if is_detailed:
-            log("🎯 Detailed Mode: Applying Professional Matting")
+            log("🎯 Detailed Subject: Applying Professional Matting with Color Cleaning")
+            # पहिले BiRefNet ले कच्चा मास्क निकाल्छ
             raw_mask = remove(img, session=session, only_mask=True)
-            refined_alpha = professional_refinement(img, raw_mask)
+            
+            # १. मास्क रिफाइनमेन्ट (Alpha Matting)
+            log("Refining Mask Edges...")
+            refined_alpha = fast_guided_filter(img, raw_mask)
+            
+            # २. [MASTER STEP]: किनाराको रङ्ग सफा गर्ने (No Color Bleed)
+            cleaned_image = color_decontaminate(img, refined_alpha)
+            
+            # ३. कन्ट्रास्ट बढाउने (Sharpness)
+            refined_alpha = np.power(refined_alpha.astype(np.float32)/255.0, 1.1)
+            refined_alpha = (refined_alpha * 255).astype(np.uint8)
+            
+            final_rgba = cv2.merge([cleaned_image[:,:,0], cleaned_image[:,:,1], cleaned_image[:,:,2], refined_alpha])
         else:
-            log("📦 Solid Mode: Applying Direct Clean Cut")
-            refined_alpha = remove(img, session=session, only_mask=True, post_process_mask=True)
+            log("📦 Solid Object: Applying Direct Clean Cut with Color Cleaning")
+            # कडा वस्तुको लागि क्लिन-कट मास्क निकाल्ने
+            alpha_mask = remove(img, session=session, only_mask=True, post_process_mask=True)
+            
+            # ठोस वस्तुको किनारामा पनि रङ्ग पोखिन नदिन इनपेन्टिङ गर्ने
+            cleaned_image = color_decontaminate(img, alpha_mask)
+            final_rgba = cv2.merge([cleaned_image[:,:,0], cleaned_image[:,:,1], cleaned_image[:,:,2], alpha_mask])
 
-        # ५. फाइनल कम्पोजिटिङ (Original Pixels + Refined Mask)
-        final_rgba = cv2.merge([img[:,:,0], img[:,:,1], img[:,:,2], refined_alpha])
-        
-        # Scaling
-        h, w = final_rgba.shape[:2]
-        if max(h, w) > 1800:
-            s = 1800 / max(h, w)
-            final_rgba = cv2.resize(final_rgba, (int(w*s), int(h*s)), interpolation=cv2.INTER_AREA)
+        # ५. १८०० पिक्सेल म्यानेजमेन्ट
+        if max(final_rgba.shape[:2]) > 1800:
+            s = 1800 / max(final_rgba.shape[:2])
+            final_rgba = cv2.resize(final_rgba, (int(img.shape[1]*s), int(img.shape[0]*s)), interpolation=cv2.INTER_AREA)
 
         _, buffer = cv2.imencode('.png', final_rgba)
-        log("🟢 Success!")
+        log("🟢 Done! Production Quality Sent.")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
         
     except Exception as e:
