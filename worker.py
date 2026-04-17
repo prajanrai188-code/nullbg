@@ -10,35 +10,39 @@ os.environ["U2NET_HOME"] = "/root/.u2net"
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🟢 GPU init with fallback
-log("🟢 Initializing Production Engine...")
+# 🟢 Init
+log("🟢 Initializing Engine...")
 try:
     session = new_session("birefnet-general", providers=['CUDAExecutionProvider'])
-    log("✅ GPU mode ON")
+    log("✅ GPU ON")
 except:
     session = new_session("birefnet-general")
-    log("⚠️ CPU fallback mode")
+    log("⚠️ CPU fallback")
 
-# 🔥 CLEAN + TRIMAP + MATTING PIPELINE
-def refine_alpha(image, raw_mask):
-    mask = raw_mask.copy()
+# -----------------------------
+# 🧠 TYPE DETECTION
+# -----------------------------
+def is_human(mask):
+    white_ratio = np.sum(mask > 200) / mask.size
+    return white_ratio > 0.15
 
-    # 🧼 1. Noise cleaning (important)
+# -----------------------------
+# 👤 HUMAN REFINEMENT
+# -----------------------------
+def refine_human(image, raw_mask):
     kernel = np.ones((3,3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    # 🎯 2. Generate trimap (key upgrade)
-    fg = cv2.erode(mask, kernel, iterations=2)
-    bg = cv2.dilate(mask, kernel, iterations=2)
+    # safer trimap
+    fg = cv2.erode(raw_mask, kernel, iterations=1)
+    bg = cv2.dilate(raw_mask, kernel, iterations=3)
+    fg = cv2.dilate(fg, kernel, iterations=1)
 
-    trimap = np.full(mask.shape, 128, dtype=np.uint8)
+    trimap = np.full(raw_mask.shape, 128, dtype=np.uint8)
     trimap[bg == 0] = 0
     trimap[fg == 255] = 255
 
-    # 🧠 3. Guided filter (hair refinement)
+    mask_f = raw_mask.astype(np.float32) / 255.0
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
-    mask_f = mask.astype(np.float32) / 255.0
 
     r, eps = 4, 1e-4
     mean_I = cv2.boxFilter(gray, -1, (r,r))
@@ -53,22 +57,87 @@ def refine_alpha(image, raw_mask):
     refined = cv2.boxFilter(a, -1, (r,r)) * gray + cv2.boxFilter(b, -1, (r,r))
     refined = np.clip(refined, 0, 1)
 
-    # 🎯 4. Apply ONLY on unknown region
     alpha = np.where(trimap == 128, refined, mask_f)
 
-    # 🛡️ 5. Protect solid regions (no shoulder blur)
-    alpha[trimap == 255] = 1.0
-    alpha[trimap == 0] = 0.0
+    # protect body
+    strong_fg = raw_mask > 200
+    alpha[strong_fg] = 1.0
 
-    # ✨ 6. Anti-halo + contrast
-    alpha = np.power(alpha, 1.1)
-    alpha = np.clip(alpha, 0, 1)
+    alpha = cv2.GaussianBlur(alpha, (3,3), 0)
+    alpha = np.power(alpha, 1.05)
 
     return (alpha * 255).astype(np.uint8)
 
+# -----------------------------
+# 👟 PRODUCT CLEAN
+# -----------------------------
+def refine_product(mask):
+    kernel = np.ones((3,3), np.uint8)
+
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    _, mask = cv2.threshold(mask, 140, 255, cv2.THRESH_BINARY)
+
+    mask = cv2.GaussianBlur(mask, (3,3), 0)
+
+    return mask
+
+# -----------------------------
+# ✂️ AUTO CROP
+# -----------------------------
+def get_bbox(mask):
+    coords = np.column_stack(np.where(mask > 10))
+    if coords.size == 0:
+        return 0,0,mask.shape[1],mask.shape[0]
+    y_min, x_min = coords.min(axis=0)
+    y_max, x_max = coords.max(axis=0)
+    return x_min, y_min, x_max, y_max
+
+def crop_with_margin(img, mask, margin=40):
+    x1, y1, x2, y2 = get_bbox(mask)
+
+    h, w = img.shape[:2]
+
+    x1 = max(0, x1 - margin)
+    y1 = max(0, y1 - margin)
+    x2 = min(w, x2 + margin)
+    y2 = min(h, y2 + margin)
+
+    return img[y1:y2, x1:x2], mask[y1:y2, x1:x2]
+
+# -----------------------------
+# 🎯 CENTER FIT
+# -----------------------------
+def center_fit(img, alpha, size=1024):
+    h, w = img.shape[:2]
+
+    scale = size / max(h, w)
+    new_w, new_h = int(w*scale), int(h*scale)
+
+    img_resized = cv2.resize(img, (new_w, new_h))
+    alpha_resized = cv2.resize(alpha, (new_w, new_h))
+
+    canvas = np.zeros((size, size, 4), dtype=np.uint8)
+
+    x_offset = (size - new_w)//2
+    y_offset = (size - new_h)//2
+
+    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = cv2.merge([
+        img_resized[:,:,0],
+        img_resized[:,:,1],
+        img_resized[:,:,2],
+        alpha_resized
+    ])
+
+    return canvas
+
+# -----------------------------
+# 🚀 HANDLER
+# -----------------------------
 def handler(job):
     try:
-        log("🔵 Processing job...")
+        log("🔵 Processing...")
 
         img_b64 = job['input']['image'].split(",")[-1]
         img = cv2.imdecode(
@@ -79,39 +148,32 @@ def handler(job):
         if img is None:
             return {"error": "Invalid image"}
 
-        orig_h, orig_w = img.shape[:2]
+        # resize for speed
+        h, w = img.shape[:2]
+        scale = min(1.0, 1600 / max(h, w))
+        img_proc = cv2.resize(img, (int(w*scale), int(h*scale)))
 
-        # ⚡ dynamic resize (balanced performance)
-        MAX_SIZE = 1600
-        scale = min(1.0, MAX_SIZE / max(orig_h, orig_w))
-        img_proc = cv2.resize(
-            img,
-            (int(orig_w * scale), int(orig_h * scale)),
-            interpolation=cv2.INTER_AREA
-        )
-
-        # 🤖 segmentation
-        log("🤖 Generating base mask...")
+        # base mask
         raw_mask = remove(img_proc, session=session, only_mask=True)
 
-        # ✨ refinement
-        log("✨ Refining alpha...")
-        refined_alpha = refine_alpha(img_proc, raw_mask)
+        # pipeline switch
+        if is_human(raw_mask):
+            log("👤 Human mode")
+            alpha = refine_human(img_proc, raw_mask)
+        else:
+            log("👟 Product mode")
+            alpha = refine_product(raw_mask)
 
-        # 🔁 upscale back
-        alpha_full = cv2.resize(
-            refined_alpha,
-            (orig_w, orig_h),
-            interpolation=cv2.INTER_CUBIC
-        )
+        # upscale back
+        alpha_full = cv2.resize(alpha, (w, h))
 
-        # 🎯 final merge
-        b, g, r = cv2.split(img)
-        final_rgba = cv2.merge([b, g, r, alpha_full])
+        # crop + fit
+        cropped_img, cropped_mask = crop_with_margin(img, alpha_full)
+        final_rgba = center_fit(cropped_img, cropped_mask)
 
         _, buffer = cv2.imencode('.png', final_rgba)
 
-        log("🟢 Done!")
+        log("🟢 Done")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
 
     except Exception as e:
