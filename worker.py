@@ -10,8 +10,8 @@ os.environ["U2NET_HOME"] = "/root/.u2net"
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🟢 Init Engine
-log("🟢 Initializing High-Precision Engine...")
+# 🟢 Init
+log("🟢 Initializing Texture-Aware Engine...")
 try:
     session = new_session("birefnet-general", providers=['CUDAExecutionProvider'])
     log("✅ GPU/CUDA Active")
@@ -20,61 +20,60 @@ except:
     log("⚠️ CPU Mode")
 
 def is_human(mask):
-    white_ratio = np.sum(mask > 200) / mask.size
-    return white_ratio > 0.15
+    return (np.sum(mask > 200) / mask.size) > 0.15
 
-# 👤 HUMAN REFINEMENT (Selective Matting Logic)
+# 👤 HUMAN REFINEMENT (The Texture-Smart Logic)
 def refine_human(image, raw_mask):
     mask_f = raw_mask.astype(np.float32) / 255.0
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # १. [DETAIL DETECTION]: जटिल किनारा (कपाल) मात्र पत्ता लगाउने
+    # १. [TEXTURE ANALYSIS]: कपाल र छाला छुट्ट्याउने जादु
+    # Laplacian ले जहाँ 'बनावट' जटिल छ (कपाल), त्यहाँ उच्च भ्यालु दिन्छ।
+    laplacian = cv2.Laplacian(gray, cv2.CV_32F).clip(0, 255)
+    texture_map = cv2.GaussianBlur(laplacian, (15, 15), 0)
+    texture_map = (texture_map > 15).astype(np.float32) # थ्रेसहोल्ड: १५
+
+    # २. [EDGE ZONE]: किनारा पत्ता लगाउने
     edges = cv2.Canny(raw_mask, 100, 200)
-    # कपालको वरिपरि मात्र १० पिक्सेलको 'Refinement Zone' बनाउने
-    detail_zone = cv2.dilate(edges, np.ones((10,10), np.uint8), iterations=1).astype(np.float32) / 255.0
+    edge_zone = cv2.dilate(edges, np.ones((5,5), np.uint8), iterations=1).astype(np.float32) / 255.0
 
-    # २. [GUIDED FILTER]: म्याटिङ क्याल्कुलेसन
+    # ३. [SELECTIVE WEIGHTS]: पाखुरामा जिरो, कपालमा फुल म्याटिङ
+    # किनारा र जटिल बनावट दुवै मिलेको ठाउँमा मात्र म्याटिङ लगाउने।
+    matting_weights = edge_zone * texture_map
+
+    # ४. [GUIDED FILTER]: म्याटिङ क्याल्कुलेसन
+    gray_f = gray.astype(np.float32) / 255.0
     r, eps = 4, 1e-4
-    mean_I = cv2.boxFilter(gray, -1, (r,r))
+    mean_I = cv2.boxFilter(gray_f, -1, (r,r))
     mean_p = cv2.boxFilter(mask_f, -1, (r,r))
-    mean_Ip = cv2.boxFilter(gray * mask_f, -1, (r,r))
+    mean_Ip = cv2.boxFilter(gray_f * mask_f, -1, (r,r))
     cov_Ip = mean_Ip - mean_I * mean_p
-    var_I = cv2.boxFilter(gray * gray, -1, (r,r)) - mean_I * mean_I
+    var_I = cv2.boxFilter(gray_f * gray_f, -1, (r,r)) - mean_I * mean_I
 
     a = cov_Ip / (var_I + eps)
     b = mean_p - a * mean_I
-
-    refined = cv2.boxFilter(a, -1, (r,r)) * gray + cv2.boxFilter(b, -1, (r,r))
+    refined = cv2.boxFilter(a, -1, (r,r)) * gray_f + cv2.boxFilter(b, -1, (r,r))
     refined = np.clip(refined, 0, 1)
 
-    # ३. [SELECTIVE BLEND]: पाखुरा जोगाउने मास्टर लजिक
-    # जहाँ 'detail_zone' छ (कपाल), त्यहाँ 'refined' मास्क।
-    # जहाँ सीधा किनारा छ (पाखुरा), त्यहाँ एआईको ओरिजिनल कडा (raw_mask) मास्क।
-    alpha = np.where(detail_zone > 0.1, refined, mask_f)
+    # ५. [FINAL BLENDING]: पाखुरामा 'Sharp' मास्क, कपालमा 'Refined'
+    # matting_weights ले गर्दा पाखुराको चिल्लो भागमा फिल्टर चल्दैन।
+    alpha = (1.0 - matting_weights) * mask_f + matting_weights * refined
     
-    # पाखुराको मासु जोगाउन भित्री २ पिक्सेल १००% लक गर्ने
-    body_core = cv2.erode(raw_mask, np.ones((3,3), np.uint8), iterations=2)
+    # पाखुराको भित्री मासु जोगाउन 'Core' लक गर्ने
+    body_core = cv2.erode(raw_mask, np.ones((5,5), np.uint8), iterations=1)
     alpha[body_core == 255] = 1.0
 
     return (np.clip(alpha * 255, 0, 255)).astype(np.uint8)
 
-# 👟 PRODUCT REFINEMENT (Sharp Cut Logic)
+# 👟 PRODUCT REFINEMENT (Strictly Sharp)
 def refine_product(mask):
+    # कुनै पनि फिल्टर नलगाई सिधै कडा किनारा दिने (यसले ब्याकग्राउन्ड रङ्ग आउन दिँदैन)
     kernel = np.ones((3,3), np.uint8)
-    
-    # १. [ANTI-BLEED]: १ पिक्सेल मात्र इरोड गर्ने (Background हटाउन)
-    mask = cv2.erode(mask, kernel, iterations=1)
-    
-    # २. [CLEANUP]: साना प्वालहरू र धुलो सफा गर्ने
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    
-    # ३. [SHARP CUT]: ब्लर हटाएर सिधै कडा किनारा बनाउने
-    # यहाँ GaussianBlur हटाइएको छ ताकि प्रोडक्ट "Matted" नदेखियोस्।
+    mask = cv2.erode(mask, kernel, iterations=1) # १ पिक्सेल भित्र काट्ने
     _, mask = cv2.threshold(mask, 150, 255, cv2.THRESH_BINARY)
-    
     return mask
 
+# --- Utility Functions (उस्तै राख्नुहोस्) ---
 def get_bbox(mask):
     coords = np.column_stack(np.where(mask > 10))
     if coords.size == 0: return 0,0,mask.shape[1],mask.shape[0]
@@ -101,7 +100,7 @@ def center_fit(img, alpha, size=1024):
 
 def handler(job):
     try:
-        log("🔵 Processing High-Res Image...")
+        log("🔵 Selective Texture Processing...")
         img_b64 = job['input']['image'].split(",")[-1]
         img = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
         if img is None: return {"error": "Invalid Image"}
@@ -113,10 +112,10 @@ def handler(job):
         raw_mask = remove(img_proc, session=session, only_mask=True)
 
         if is_human(raw_mask):
-            log("👤 Human Mode: Protecting Arms, Refining Hair")
+            log("👤 Human Mode: Selective Matting Activated")
             alpha = refine_human(img_proc, raw_mask)
         else:
-            log("📦 Product Mode: Sharp Binary Cut")
+            log("📦 Product Mode: Sharp Cut Activated")
             alpha = refine_product(raw_mask)
 
         alpha_full = cv2.resize(alpha, (w, h))
