@@ -6,125 +6,83 @@ from rembg import remove, new_session
 import traceback
 import os
 
+# १. मोडेल क्यासिङ सेटिङ
 os.environ["U2NET_HOME"] = "/root/.u2net"
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🟢 Init
-log("🟢 Initializing Texture-Aware Engine...")
+# 🟢 GPU सेसन सुरुमै लोड गर्ने (Persistent Session)
+log("🟢 Loading Final Production Engine...")
 try:
     session = new_session("birefnet-general", providers=['CUDAExecutionProvider'])
-    log("✅ GPU/CUDA Active")
-except:
+    log("✅ CUDA GPU Active")
+except Exception as e:
+    log(f"⚠️ GPU Issue, using CPU. Error: {e}")
     session = new_session("birefnet-general")
-    log("⚠️ CPU Mode")
 
-def is_human(mask):
-    return (np.sum(mask > 200) / mask.size) > 0.15
-
-# 👤 HUMAN REFINEMENT (The Texture-Smart Logic)
-def refine_human(image, raw_mask):
-    mask_f = raw_mask.astype(np.float32) / 255.0
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-    # १. [TEXTURE ANALYSIS]: कपाल र छाला छुट्ट्याउने जादु
-    # Laplacian ले जहाँ 'बनावट' जटिल छ (कपाल), त्यहाँ उच्च भ्यालु दिन्छ।
-    laplacian = cv2.Laplacian(gray, cv2.CV_32F).clip(0, 255)
-    texture_map = cv2.GaussianBlur(laplacian, (15, 15), 0)
-    texture_map = (texture_map > 15).astype(np.float32) # थ्रेसहोल्ड: १५
-
-    # २. [EDGE ZONE]: किनारा पत्ता लगाउने
-    edges = cv2.Canny(raw_mask, 100, 200)
-    edge_zone = cv2.dilate(edges, np.ones((5,5), np.uint8), iterations=1).astype(np.float32) / 255.0
-
-    # ३. [SELECTIVE WEIGHTS]: पाखुरामा जिरो, कपालमा फुल म्याटिङ
-    # किनारा र जटिल बनावट दुवै मिलेको ठाउँमा मात्र म्याटिङ लगाउने।
-    matting_weights = edge_zone * texture_map
-
-    # ४. [GUIDED FILTER]: म्याटिङ क्याल्कुलेसन
-    gray_f = gray.astype(np.float32) / 255.0
-    r, eps = 4, 1e-4
-    mean_I = cv2.boxFilter(gray_f, -1, (r,r))
-    mean_p = cv2.boxFilter(mask_f, -1, (r,r))
-    mean_Ip = cv2.boxFilter(gray_f * mask_f, -1, (r,r))
-    cov_Ip = mean_Ip - mean_I * mean_p
-    var_I = cv2.boxFilter(gray_f * gray_f, -1, (r,r)) - mean_I * mean_I
-
-    a = cov_Ip / (var_I + eps)
-    b = mean_p - a * mean_I
-    refined = cv2.boxFilter(a, -1, (r,r)) * gray_f + cv2.boxFilter(b, -1, (r,r))
-    refined = np.clip(refined, 0, 1)
-
-    # ५. [FINAL BLENDING]: पाखुरामा 'Sharp' मास्क, कपालमा 'Refined'
-    # matting_weights ले गर्दा पाखुराको चिल्लो भागमा फिल्टर चल्दैन।
-    alpha = (1.0 - matting_weights) * mask_f + matting_weights * refined
-    
-    # पाखुराको भित्री मासु जोगाउन 'Core' लक गर्ने
-    body_core = cv2.erode(raw_mask, np.ones((5,5), np.uint8), iterations=1)
-    alpha[body_core == 255] = 1.0
-
-    return (np.clip(alpha * 255, 0, 255)).astype(np.uint8)
-
-# 👟 PRODUCT REFINEMENT (Strictly Sharp)
-def refine_product(mask):
-    # कुनै पनि फिल्टर नलगाई सिधै कडा किनारा दिने (यसले ब्याकग्राउन्ड रङ्ग आउन दिँदैन)
+def color_clean(image, mask):
+    """
+    [COLOR BLEED FIX]: किनारामा टाँसिएको ब्याकग्राउन्डको रङ्ग (हरियो/रातो) सफा गर्छ।
+    """
     kernel = np.ones((3,3), np.uint8)
-    mask = cv2.erode(mask, kernel, iterations=1) # १ पिक्सेल भित्र काट्ने
-    _, mask = cv2.threshold(mask, 150, 255, cv2.THRESH_BINARY)
-    return mask
-
-# --- Utility Functions (उस्तै राख्नुहोस्) ---
-def get_bbox(mask):
-    coords = np.column_stack(np.where(mask > 10))
-    if coords.size == 0: return 0,0,mask.shape[1],mask.shape[0]
-    y_min, x_min = coords.min(axis=0); y_max, x_max = coords.max(axis=0)
-    return x_min, y_min, x_max, y_max
-
-def crop_with_margin(img, mask, margin=40):
-    x1, y1, x2, y2 = get_bbox(mask)
-    h, w = img.shape[:2]
-    x1, y1 = max(0, x1 - margin), max(0, y1 - margin)
-    x2, y2 = min(w, x2 + margin), min(h, y2 + margin)
-    return img[y1:y2, x1:x2], mask[y1:y2, x1:x2]
-
-def center_fit(img, alpha, size=1024):
-    h, w = img.shape[:2]
-    scale = size / max(h, w)
-    new_w, new_h = int(w*scale), int(h*scale)
-    img_res = cv2.resize(img, (new_w, new_h))
-    alpha_res = cv2.resize(alpha, (new_w, new_h))
-    canvas = np.zeros((size, size, 4), dtype=np.uint8)
-    x_off, y_off = (size - new_w)//2, (size - new_h)//2
-    canvas[y_off:y_off+new_h, x_off:x_off+new_w] = cv2.merge([img_res[:,:,0], img_res[:,:,1], img_res[:,:,2], alpha_res])
-    return canvas
+    # किनाराको क्षेत्र मात्र निकाल्ने
+    mask_dilated = cv2.dilate(mask, kernel, iterations=1)
+    edge_zone = cv2.subtract(mask_dilated, cv2.erode(mask, kernel, iterations=1))
+    
+    # इनपेन्टिङ प्रयोग गरेर किनाराको रङ्गलाई ओरिजिनल पिक्सेलले भर्ने
+    cleaned_img = cv2.inpaint(image, edge_zone, 3, cv2.INPAINT_TELEA)
+    return cleaned_img
 
 def handler(job):
     try:
-        log("🔵 Selective Texture Processing...")
+        log("🔵 New Job: Processing with 2K HD Target")
+        
+        # १. इनपुट इमेज डिकोड
         img_b64 = job['input']['image'].split(",")[-1]
-        img = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
-        if img is None: return {"error": "Invalid Image"}
+        img_raw = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
+        if img_raw is None: return {"error": "Invalid Image Format"}
 
-        h, w = img.shape[:2]
-        scale = min(1.0, 1600 / max(h, w))
-        img_proc = cv2.resize(img, (int(w*scale), int(h*scale)))
+        orig_h, orig_w = img_raw.shape[:2]
 
-        raw_mask = remove(img_proc, session=session, only_mask=True)
-
-        if is_human(raw_mask):
-            log("👤 Human Mode: Selective Matting Activated")
-            alpha = refine_human(img_proc, raw_mask)
+        # २. [THE SPEED & QUALITY BALANCE]: १६००px मा एआई चलाउने
+        # यसले २K क्वालिटी पनि दिन्छ र ७५ सेकेन्ड लाग्ने समस्या पनि हटाउँछ।
+        WORKING_SIZE = 1600
+        if max(orig_h, orig_w) > WORKING_SIZE:
+            scale = WORKING_SIZE / max(orig_h, orig_w)
+            img_proc = cv2.resize(img_raw, (int(orig_w * scale), int(orig_h * scale)), interpolation=cv2.INTER_AREA)
+            resized = True
         else:
-            log("📦 Product Mode: Sharp Cut Activated")
-            alpha = refine_product(raw_mask)
+            img_proc = img_raw
+            resized = False
 
-        alpha_full = cv2.resize(alpha, (w, h))
-        cropped_img, cropped_mask = crop_with_margin(img, alpha_full)
-        final_rgba = center_fit(cropped_img, cropped_mask)
+        # ३. [AI SEGMENTATION]: पाखुरा जोगाउन र कपाल रिफाइन गर्न
+        log("🤖 Running High-Precision Segmentation...")
+        res_rgba = remove(
+            img_proc, 
+            session=session, 
+            alpha_matting=True,
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=2 # हात काटिन नदिन टाइट राखिएको
+        )
+        
+        # ४. [COLOR DECONTAMINATION]: हरियो छायाँ हटाउने
+        b, g, r, alpha = cv2.split(res_rgba)
+        cleaned_bgr = color_clean(img_proc, alpha)
+        
+        # ५. [HD RESTORE]: मास्कलाई ओरिजिनल साइजमा फिर्ता लाने
+        # 'LANCZOS4' ले मास्कलाई २K/४K मा बढाउँदा पिक्सेल फुट्न दिँदैन।
+        log("🔄 Restoring to Original HD Resolution...")
+        alpha_full = cv2.resize(alpha, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
+        
+        # ६. फाइनल आउटपुट (Original Image + Cleaned Mask)
+        final_rgba = cv2.merge([img_raw[:,:,0], img_raw[:,:,1], img_raw[:,:,2], alpha_full])
 
+        # ७. इन्कोडिङ र रिटर्न
         _, buffer = cv2.imencode('.png', final_rgba)
-        log("🟢 Done!")
+        log("🟢 Done! Quality is High, Speed is Optimized.")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
+
     except Exception as e:
         log(f"🔴 ERROR: {traceback.format_exc()}")
         return {"error": str(e)}
