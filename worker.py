@@ -10,23 +10,21 @@ os.environ["U2NET_HOME"] = "/root/.u2net"
 
 def log(msg): print(f"--> {msg}", flush=True)
 
-# 🟢 Pure BiRefNet Engine (No Slow Dependencies)
-log("🟢 Initializing Pure BiRefNet Pro Engine...")
+# 🟢 SaaS Pro Engine Load
+log("🟢 Initializing Remove.bg Level Engine...")
 session = new_session("birefnet-general", providers=['CUDAExecutionProvider'])
 
 def handler(job):
     try:
-        log("🔵 Processing Pro SaaS Job...")
+        log("🔵 Processing VIP Request...")
         img_b64 = job['input']['image'].split(",")[-1]
-        img_data = base64.b64decode(img_b64)
-        img_raw = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
+        img_raw = cv2.imdecode(np.frombuffer(base64.b64decode(img_b64), np.uint8), cv2.IMREAD_COLOR)
         
-        if img_raw is None: return {"error": "Invalid Image"}
+        if img_raw is None: return {"error": "Invalid Image Format"}
 
         orig_h, orig_w = img_raw.shape[:2]
 
-        # १. [SPEED & PRECISION]: १०२४px (BiRefNet को सबैभन्दा शक्तिशाली रेजोलुसन)
-        # यसले ७४ सेकेन्डको कामलाई ४ सेकेन्डमा झार्छ।
+        # १. [OPTIMIZED SCALE]: 1024px (स्पिड र क्वालिटीको पर्फेक्ट ब्यालेन्स)
         WORKING_SIZE = 1024
         scale = min(1.0, WORKING_SIZE / max(orig_h, orig_w))
         if scale < 1.0:
@@ -34,32 +32,34 @@ def handler(job):
         else:
             img_proc = img_raw
 
-        # २. [PURE AI SEGMENTATION]: (No Alpha Matting!)
-        # BiRefNet ले आफैँ सिसा, तार, र कपाल चिन्छ। पुरानो alpha_matting ले नै स्पिड मारेको थियो।
-        log("🤖 Running Native BiRefNet Inference...")
-        raw_mask = remove(
+        # २. [REMOVE.BG MATTING LOGIC]: कपाल, सिसा र तारको लागि अनिवार्य
+        log("🤖 Extracting Alpha Matting...")
+        res_rgba = remove(
             img_proc, 
             session=session, 
-            only_mask=True,
-            post_process_mask=True # भित्रका साना नचाहिने प्वालहरू आफैँ टाल्छ
+            alpha_matting=True,
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=1 # ठोस वस्तु (जुत्ता/बोतल) नबिग्रियोस् भनेर १ मा राखिएको
         )
         
-        # ३. [HD RECOVERY]: मास्कलाई ओरिजिनल फोटोको साइजमा तन्काउने
+        # ३. [HD UPSCALING]: सानो मास्कलाई ओरिजिनल 4K/HD साइजमा लग्ने
+        _, _, _, alpha_small = cv2.split(res_rgba)
         if scale < 1.0:
-            # LANCZOS4 ले मास्कलाई तन्काउँदा किनारा फुट्न दिँदैन
-            mask_full = cv2.resize(raw_mask, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
+            # LANCZOS4 ले मास्क तन्काउँदा किनारा फुट्दैन
+            alpha_full = cv2.resize(alpha_small, (orig_w, orig_h), interpolation=cv2.INTER_LANCZOS4)
         else:
-            mask_full = raw_mask
+            alpha_full = alpha_small
 
-        # ४. [PRO EDGE FEATHERING]: (तपाईँले खोज्नुभएको 'Premium Smooth Edge')
-        # यसले ठोस वस्तुको किनारालाई काटेको जस्तो नक्कली देखिन दिँदैन। कपाल र तारलाई पनि प्राकृतिक बनाउँछ।
-        smoothed_mask = cv2.GaussianBlur(mask_full, (3, 3), 0)
-
-        # ५. फाइनल आउटपुट (Original HD Image + Smoothed Mask)
-        final_rgba = cv2.merge([img_raw[:,:,0], img_raw[:,:,1], img_raw[:,:,2], smoothed_mask])
+        # ४. [PRO EDGE SMOOTHING]: (तपाईँले खोज्नुभएको 'थोरै Shadow/Smoothness')
+        # यसले ठोस वस्तुको किनारालाई काटेको जस्तो नक्कली देखिन दिँदैन र कपाललाई प्राकृतिक बनाउँछ।
+        final_alpha = cv2.GaussianBlur(alpha_full, (3, 3), 0)
+        
+        # ५. [FINAL COMPOSITE]: ओरिजिनल पिक्सेल + नयाँ पर्फेक्ट मास्क
+        final_rgba = cv2.merge([img_raw[:,:,0], img_raw[:,:,1], img_raw[:,:,2], final_alpha])
 
         _, buffer = cv2.imencode('.png', final_rgba)
-        log("🟢 Done! Professional Speed and Quality Achieved.")
+        log("🟢 Done! Premium Quality Exported.")
         return {"image": base64.b64encode(buffer).decode('utf-8')}
 
     except Exception as e:
