@@ -1,7 +1,5 @@
-rembg[gpu]
-onnxruntime-gpu
-opencv-python-headless
-numpy
-pillow
 runpod
+rembg[gpu]
+opencv-python-headless
+numpy<2.0.0
 ultralytics
