@@ -1,31 +1,29 @@
-# १. GPU सपोर्ट भएको पाइथन इमेज
-FROM pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
+# १. Official NVIDIA CUDA 12 Image (Resolves libcudnn.so.9 errors)
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV U2NET_HOME=/root/.u2net
 WORKDIR /app
 
-# २. सिस्टम डिपेंडेन्सीहरू (OpenCV को लागि अनिवार्य)
+# २. System Dependencies (Python 3 and OpenCV requirements)
 RUN apt-get update && apt-get install -y \
+    python3 python3-pip \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    wget \
-    git \
+    wget git \
     && rm -rf /var/lib/apt/lists/*
 
-# ३. आवश्यक लाइब्रेरीहरू इन्स्टल गर्ने
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+# ३. Install Libraries
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# ४. [PRE-LOADING MODELS]: सर्भर स्टार्ट हुँदा स्पिड बढाउन
-ENV U2NET_HOME=/root/.u2net
+# ४. PRE-LOADING MODELS: For Fast Cold Starts
 RUN mkdir -p /root/.u2net
-
-# BiRefNet-General र YOLOv8n पहिल्यै डाउनलोड गर्ने
 RUN python -c "from rembg import new_session; new_session('birefnet-general')"
 RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
-# ५. सबै फाइलहरू कपि गर्ने
+# ५. Copy Files & Run
 COPY . .
-
-# ६. वर्कर स्टार्ट गर्ने
 CMD ["python", "-u", "worker.py"]
